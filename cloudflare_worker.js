@@ -238,9 +238,13 @@ export default {
 
             const tmin = [], tmean = [], tmax = [];
             const tpmin = [], tprophet = [], tpmax = [];
+            const tnbeats = [], tnbeats_lower = [], tnbeats_upper = [];
             const trend = [];
             const sunset = [];
             const sunrise = [];
+
+            // Check if NBEATSx columns exist
+            const hasNbeats = idx('tnbeats') >= 0;
 
             lines.forEach(l => {
               if (!l.trim()) return;
@@ -256,6 +260,12 @@ export default {
               tpmin.push([ts, safe(c[idx('tpmin')])]);
               tpmax.push([ts, safe(c[idx('tpmax')])]);
               trend.push([ts, safe(c[idx('trend-weekly')])]);
+              // NBEATSx columns (optional)
+              if (hasNbeats) {
+                tnbeats.push([ts, safe(c[idx('tnbeats')])]);
+                tnbeats_lower.push([ts, safe(c[idx('tnbeats_lower')])]);
+                tnbeats_upper.push([ts, safe(c[idx('tnbeats_upper')])]);
+              }
             });
             
             // badge
@@ -264,6 +274,7 @@ export default {
 
             const obsBand  = tmin.map((d, i) => [d[0], d[1], tmax[i][1]]);
             const predBand = tpmin.map((d, i) => [d[0], d[1], tpmax[i][1]]);
+            const nbeatsBand = hasNbeats ? tnbeats_lower.map((d, i) => [d[0], d[1], tnbeats_upper[i][1]]) : [];
             // ---- Compute average night length and build bands ----
             let nightMs = 0;
             // If we have at least one sunrise and one sunset, compute day/night
@@ -316,9 +327,10 @@ export default {
                   let s = '<b>' + Highcharts.dateFormat('%Y-%m-%d %H:%M', this.x) + '</b><br/>';
                   this.points.forEach(p => {
                     const n = p.series.name, col = p.color;
-                    if (n === '(max-min)' || n === '68% cfi') {
+                    if (n === '(max-min)' || n === '68% cfi' || n === 'NBEATSx cfi') {
+                      const label = n === 'NBEATSx cfi' ? 'NBEATSx range' : '(max‑min)';
                       s += '<span style="color:' + col +
-                           '">●</span> (max‑min): <b>' + (p.point.high - p.point.low).toFixed(2) + '°C</b><br/>';
+                           '">●</span> ' + label + ': <b>' + (p.point.high - p.point.low).toFixed(2) + '°C</b><br/>';
                     } else {
                       s += '<span style="color:' + col + '">●</span> ' + n +
                            ': <b>' + p.y.toFixed(2) + '°C</b><br/>';
@@ -334,6 +346,13 @@ export default {
                 { name: '68% cfi', type: 'arearange', data: predBand,
                   color: 'rgba(178,34,34,0.25)', lineWidth: 0, marker: { enabled: false }, zIndex: 0 },
                 { name: 'Prophet Forecast', data: tprophet, color: 'firebrick', zIndex: 1, connectNulls: false },
+                // NBEATSx-Ridge forecast (if available)
+                ...(hasNbeats ? [
+                  { name: 'NBEATSx cfi', type: 'arearange', data: nbeatsBand,
+                    color: 'rgba(0,128,128,0.25)', lineWidth: 0, marker: { enabled: false }, zIndex: 0 },
+                  { name: 'NBEATSx-Ridge', data: tnbeats, color: 'teal', zIndex: 2, connectNulls: false,
+                    lineWidth: 2.5, dashStyle: 'Solid' }
+                ] : []),
                 { name: 'Trend + Weekly', data: trend, color: 'gray', zIndex: 1,
                   connectNulls: false, marker: { enabled: false } }
               ],
@@ -363,12 +382,24 @@ export default {
             var actualTwilight = tmean[idxTwilight][1];
             var uncTwilight = (tpmax[idxTwilight][1] - tpmin[idxTwilight][1])/2.0;
 
+            // Prefer NBEATSx forecast if available
+            var forecastLabel = 'Prophet';
+            if (hasNbeats && tnbeats.length > 0) {
+              var idxNbeats = closestIdx(tnbeats, twilightUTC);
+              var nbeatsForecast = tnbeats[idxNbeats][1];
+              if (nbeatsForecast !== null) {
+                forecastTwilight = nbeatsForecast;
+                forecastLabel = 'NBEATSx-Ridge';
+                uncTwilight = (tnbeats_upper[idxNbeats][1] - tnbeats_lower[idxNbeats][1])/2.0;
+              }
+            }
+
             // --- Update forecast box ---
             document.getElementById('twilight-forecast').innerHTML =
               (forecastTwilight !== null ? forecastTwilight.toFixed(1) : '--') + '<span class="deg">°C</span>';
             document.getElementById('twilight-forecast-uncertainty').textContent =
               (isFinite(uncTwilight) && uncTwilight > 0)
-                ? '\u00B1 ' + uncTwilight.toFixed(1) + '\u00B0C'
+                ? '\u00B1 ' + uncTwilight.toFixed(1) + '\u00B0C (' + forecastLabel + ')'
                 : '\u00B1 -- \u00B0C';
             document.getElementById('twilight-actual').textContent =
               (actualTwilight !== null ? actualTwilight.toFixed(1) : '--') + ' °C (Weather Tower)';
