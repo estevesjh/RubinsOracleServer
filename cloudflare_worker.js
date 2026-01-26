@@ -361,7 +361,7 @@ export default {
             var idxTwilight = closestIdx(tprophet, twilightUTC);
             var forecastTwilight = tprophet[idxTwilight][1];
             var actualTwilight = tmean[idxTwilight][1];
-            var uncTwilight = tpmax[idxTwilight][1] - tpmin[idxTwilight][1];
+            var uncTwilight = (tpmax[idxTwilight][1] - tpmin[idxTwilight][1])/2.0;
 
             // --- Update forecast box ---
             document.getElementById('twilight-forecast').innerHTML =

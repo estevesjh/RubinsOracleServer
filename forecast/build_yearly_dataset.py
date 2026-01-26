@@ -3,8 +3,7 @@ import pytz
 import pandas as pd
 from pathlib import Path
 from helper import DataFileHandler
-from run_forecast import build_forecast_csv
-from prophetModel import ProphetTwilightValidator
+# from prophetModel import ProphetTwilightValidator
 
 def main():
     handler = DataFileHandler()
@@ -51,10 +50,12 @@ def main():
         
         full_index = pd.date_range(start=slice_start_local, end=slice_end_local, freq='15min', tz=tz_chile)
         df_slice = df_slice.reindex(full_index)
+        # change to utc 
+        df_slice.index = df_slice.index.tz_convert('UTC')
 
         out_path = handler.get_monthly_archive_path(month_start_local)
         os.makedirs(out_path.parent, exist_ok=True)
-        print(f"  Writing monthly dataset to {out_path}...")
+        # print(f"  Writing monthly dataset to {out_path}...")
         handler.to_csv(df_slice, out_path)
 
         current_month += pd.DateOffset(months=1)

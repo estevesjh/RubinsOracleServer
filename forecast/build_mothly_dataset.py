@@ -7,13 +7,13 @@ from helper import DataFileHandler  # Adjust if the class is in a different file
 # --- Step 1: Find month boundaries ---
 
 # Local Chilean time for "now"
-# tz_chile = pytz.timezone("America/Santiago")
+tz_chile = pytz.timezone("America/Santiago")
 # now_local = datetime.now(tz_chile)
 
 # set the date to 2024-12-01
-tz_chile = pytz.timezone("America/Santiago")
-# now_local = tz_chile.localize(datetime(2024, 12, 1, 0, 0, 0))
-now_local = tz_chile.localize(datetime(2024, 7, 1, 0, 0, 0))
+# tz_chile = pytz.timezone("America/Santiago")
+now_local = tz_chile.localize(datetime(2026, 1, 1, 0, 0, 0))
+# now_local = tz_chile.localize(datetime(2024, 7, 1, 0, 0, 0))
 
 handler = DataFileHandler()
 monthly_path = handler.get_monthly_archive_path(now_local)
