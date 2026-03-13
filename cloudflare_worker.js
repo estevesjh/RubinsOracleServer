@@ -24,11 +24,10 @@ export default {
 <html>
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://code.highcharts.com 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline';">
   <title>Rubin Summit Temperature Forecast</title>
-  <script src="https://code.highcharts.com/highcharts.js"></script>
-  <script src="https://code.highcharts.com/highcharts-more.js"></script>
-  <script src="https://code.highcharts.com/modules/exporting.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/highcharts@11/highcharts.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/highcharts@11/highcharts-more.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/highcharts@11/modules/exporting.js"></script>
   <style>
 .twilight-flex {
   display: flex;
@@ -220,7 +219,7 @@ export default {
       setInterval(updateCurrentTimeCL, 60 * 1000);
 
       function fetchAndRedraw() {
-        fetch('https://rubin-weather-forecast.jesteves.workers.dev/api/forecast')
+        fetch('/api/forecast')
           .then(r => {
             if (!r.ok) throw new Error('Server replied ' + r.status + ' ' + r.statusText);
             return r.text();
@@ -229,7 +228,7 @@ export default {
             if (!csv.trim()) throw new Error('Empty CSV returned');
 
             // ---- parse CSV (original logic retained) ----
-            const lines  = csv.trim().split('\\n');
+            const lines  = csv.trim().split(String.fromCharCode(10));
             const header = lines.shift().split(',');
             const idx = n => header.indexOf(n);
             const safe = v => { const n = parseFloat(v); return isNaN(n) ? null : +n.toFixed(1); };

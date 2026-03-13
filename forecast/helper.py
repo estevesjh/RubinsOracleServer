@@ -14,11 +14,21 @@ def floor_dt(dt, freq="15min"):
     """Floor a datetime to the nearest lower multiple of `freq`."""
     return pd.Timestamp(dt).floor(freq)
 
+ENVS = {
+    "slac": Path("/sdf/data/rubin/user/esteves/forecast"),
+    "local": Path(__file__).resolve().parent.parent / "database",
+}
+
+
 class DataFileHandler:
-    def __init__(self, 
-                 base_dir: Path = Path("/sdf/data/rubin/user/esteves/forecast"),
-                 freq: str = "15min", 
+    def __init__(self,
+                 base_dir: Path = None,
+                 freq: str = "15min",
                  window_days: int = 7):
+        if base_dir is None:
+            import os
+            env = os.environ.get("FORECAST_ENV", "slac")
+            base_dir = ENVS.get(env, ENVS["slac"])
         self.base_dir = Path(base_dir)
         self.cache_dir = self.base_dir / "cache"
         self.archive_dir = self.base_dir / "archive"

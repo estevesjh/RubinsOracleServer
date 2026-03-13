@@ -3,9 +3,17 @@ from helper import DataFileHandler
 import json
 from datetime import datetime, timezone
 
+import os
+
 handler = DataFileHandler()
 csv_path = handler.get_latest_path()
-url = "https://rubin-weather-forecast.jesteves.workers.dev/api/update"
+
+URLS = {
+    "slac": "https://rubin-weather-forecast.jesteves.workers.dev/api/update",
+    "local": "http://localhost:8787/api/update",
+}
+env = os.environ.get("FORECAST_ENV", "slac")
+url = URLS.get(env, URLS["slac"])
 
 with open(csv_path, "r", encoding="utf-8") as f:
     csv_data = f.read()

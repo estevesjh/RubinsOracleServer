@@ -330,14 +330,9 @@ class ProphetTwilightValidator:
         # 1. robust column renaming to canonical website schema -------------
         rename_map = {
             "ds": "timestamp",
-            "min": "temp_min",
-            "mean": "temp_actual",
-            "max": "temp_max",
             "yhat_lower": "forecast_min",
             "yhat": "forecast",
             "yhat_upper": "forecast_max",
-            "is_evening_twilight": "sunset",
-            "is_morning_twilight": "sunrise",
         }
         merged = merged.rename(columns=rename_map)
 
