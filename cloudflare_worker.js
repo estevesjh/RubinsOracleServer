@@ -236,11 +236,17 @@ export default {
 
             let latestPastTs = null;
 
-            const tmin = [], tmean = [], tmax = [];
-            const tpmin = [], tprophet = [], tpmax = [];
-            const trend = [];
+            const SOURCE_COLORS = {
+              prophet: { line: 'firebrick', band: 'rgba(178,34,34,0.25)' },
+              nbeats:  { line: 'steelblue', band: 'rgba(70,130,180,0.25)' }
+            };
+            const DEFAULT_COLOR = SOURCE_COLORS.prophet;
+
+            const tempMin = [], tempActual = [], tempMax = [];
+            const fcMin = [], forecast = [], fcMax = [];
             const sunset = [];
             const sunrise = [];
+            let forecastSource = null;
 
             lines.forEach(l => {
               if (!l.trim()) return;
@@ -249,21 +255,29 @@ export default {
               if (ts <= Date.now()) latestPastTs = ts;
               if (c[idx('sunset')].toLowerCase() === 'true') sunset.push(ts);
               if (c[idx('sunrise')] && c[idx('sunrise')].toLowerCase() === 'true') sunrise.push(ts);
-              tmean.push([ts, safe(c[idx('tmean')])]);
-              tprophet.push([ts, safe(c[idx('tprophet')])]);
-              tmin.push([ts, safe(c[idx('tmin')])]);
-              tmax.push([ts, safe(c[idx('tmax')])]);
-              tpmin.push([ts, safe(c[idx('tpmin')])]);
-              tpmax.push([ts, safe(c[idx('tpmax')])]);
-              trend.push([ts, safe(c[idx('trend-weekly')])]);
+              tempActual.push([ts, safe(c[idx('temp_actual')])]);
+              forecast.push([ts, safe(c[idx('forecast')])]);
+              tempMin.push([ts, safe(c[idx('temp_min')])]);
+              tempMax.push([ts, safe(c[idx('temp_max')])]);
+              fcMin.push([ts, safe(c[idx('forecast_min')])]);
+              fcMax.push([ts, safe(c[idx('forecast_max')])]);
+              if (!forecastSource && idx('forecast_source') >= 0) {
+                const src = (c[idx('forecast_source')] || '').trim().toLowerCase();
+                if (src) forecastSource = src;
+              }
             });
+
+            const palette = SOURCE_COLORS[forecastSource] || DEFAULT_COLOR;
+            const sourceLabel = forecastSource
+              ? forecastSource.charAt(0).toUpperCase() + forecastSource.slice(1)
+              : 'Forecast';
             
             // badge
-            const badgeTs = latestPastTs ?? tprophet.at(0)[0];
+            const badgeTs = latestPastTs ?? forecast.at(0)[0];
             updateBadge(badgeTs);
 
-            const obsBand  = tmin.map((d, i) => [d[0], d[1], tmax[i][1]]);
-            const predBand = tpmin.map((d, i) => [d[0], d[1], tpmax[i][1]]);
+            const obsBand  = tempMin.map((d, i) => [d[0], d[1], tempMax[i][1]]);
+            const predBand = fcMin.map((d, i) => [d[0], d[1], fcMax[i][1]]);
             // ---- Compute average night length and build bands ----
             let nightMs = 0;
             // If we have at least one sunrise and one sunset, compute day/night
@@ -330,12 +344,10 @@ export default {
               series: [
                 { name: '(max-min)', type: 'arearange', data: obsBand,
                   color: '#8080804d', lineWidth: 0, marker: { enabled: false }, zIndex: 0 },
-                { name: 'Weather Tower', data: tmean, color: 'black', zIndex: 1, connectNulls: false },
+                { name: 'Weather Tower', data: tempActual, color: 'black', zIndex: 1, connectNulls: false },
                 { name: '68% cfi', type: 'arearange', data: predBand,
-                  color: 'rgba(178,34,34,0.25)', lineWidth: 0, marker: { enabled: false }, zIndex: 0 },
-                { name: 'Prophet Forecast', data: tprophet, color: 'firebrick', zIndex: 1, connectNulls: false },
-                { name: 'Trend + Weekly', data: trend, color: 'gray', zIndex: 1,
-                  connectNulls: false, marker: { enabled: false } }
+                  color: palette.band, lineWidth: 0, marker: { enabled: false }, zIndex: 0 },
+                { name: sourceLabel + ' Forecast', data: forecast, color: palette.line, zIndex: 1, connectNulls: false }
               ],
               credits: { enabled: false }
             });
@@ -358,10 +370,12 @@ export default {
                 return Math.abs(pair[0] - target) < Math.abs(a[bestIdx][0] - target) ? i : bestIdx;
               }, 0);
             }
-            var idxTwilight = closestIdx(tprophet, twilightUTC);
-            var forecastTwilight = tprophet[idxTwilight][1];
-            var actualTwilight = tmean[idxTwilight][1];
-            var uncTwilight = (tpmax[idxTwilight][1] - tpmin[idxTwilight][1])/2.0;
+            var idxTwilight = closestIdx(forecast, twilightUTC);
+            var forecastTwilight = forecast[idxTwilight][1];
+            var actualTwilight = tempActual[idxTwilight][1];
+            var fMinVal = fcMin[idxTwilight][1];
+            var fMaxVal = fcMax[idxTwilight][1];
+            var uncTwilight = (fMinVal != null && fMaxVal != null) ? (fMaxVal - fMinVal)/2.0 : NaN;
 
             // --- Update forecast box ---
             document.getElementById('twilight-forecast').innerHTML =

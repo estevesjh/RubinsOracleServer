@@ -330,23 +330,27 @@ class ProphetTwilightValidator:
         # 1. robust column renaming to canonical website schema -------------
         rename_map = {
             "ds": "timestamp",
-            "min": "tmin",
-            "mean": "tmean",
-            "max": "tmax",
-            "yhat_lower": "tpmin",
-            "yhat": "tprophet",
-            "yhat_upper": "tpmax",
+            "min": "temp_min",
+            "mean": "temp_actual",
+            "max": "temp_max",
+            "yhat_lower": "forecast_min",
+            "yhat": "forecast",
+            "yhat_upper": "forecast_max",
             "is_evening_twilight": "sunset",
             "is_morning_twilight": "sunrise",
         }
         merged = merged.rename(columns=rename_map)
 
+        merged["forecast_source"] = "prophet"
+
         # 2. keep only what the site needs, coerce dtypes -------------------
-        df = merged[[
-            "timestamp", "tmin", "tmean", "tmax",
-            "sunset", "sunrise", "tpmin", "tprophet", "tpmax", 
-            "trend-weekly"
-        ]].copy()
+        keep = [
+            "timestamp", "temp_actual", "temp_min", "temp_max",
+            "forecast", "forecast_min", "forecast_max",
+            "sunset", "sunrise", "h_to_tw", "forecast_source",
+        ]
+        keep = [c for c in keep if c in merged.columns]
+        df = merged[keep].copy()
 
         # - timestamps as ISO-8601 local-time strings (with UTC offset)
         if pd.api.types.is_datetime64_any_dtype(df["timestamp"]):
@@ -374,7 +378,7 @@ class ProphetTwilightValidator:
         df["sunrise"] = df["sunrise"].astype(bool).map({True: "true", False: "false"})
 
         # 3. round temps to 2 decimals (match tooltip format) ---------------
-        for col in ["tmin", "tmean", "tmax", "tpmin", "tprophet", "tpmax", "trend-weekly"]:
+        for col in ["temp_actual", "temp_min", "temp_max", "forecast", "forecast_min", "forecast_max"]:
             df[col] = df[col].astype(float).round(2)
 
         # 4. write ----------------------------------------------------------

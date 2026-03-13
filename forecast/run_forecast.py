@@ -81,7 +81,7 @@ def main():
         
         merged = rolling_df.merge(forecast, on='ds', how='left')
     
-    merged.rename(columns={"min": "tmin", "max": "tmax", "y": "tmean", "is_evening_twilight": "sunset",
+    merged.rename(columns={"min": "temp_min", "max": "temp_max", "y": "temp_actual", "is_evening_twilight": "sunset",
     "is_morning_twilight": "sunrise"
     }, inplace=True)
 
