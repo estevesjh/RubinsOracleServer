@@ -1,9 +1,13 @@
+import argparse
 import requests
 from helper import DataFileHandler
 import json
 from datetime import datetime, timezone
-
 import os
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--source", default="prophet", choices=["prophet", "nbeats"])
+args = parser.parse_args()
 
 handler = DataFileHandler()
 csv_path = handler.get_latest_path()
@@ -13,7 +17,7 @@ URLS = {
     "local": "http://localhost:8787/api/update",
 }
 env = os.environ.get("FORECAST_ENV", "slac")
-url = URLS.get(env, URLS["slac"])
+url = URLS.get(env, URLS["slac"]) + "?source=" + args.source
 
 with open(csv_path, "r", encoding="utf-8") as f:
     csv_data = f.read()
