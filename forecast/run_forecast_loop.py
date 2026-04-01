@@ -9,7 +9,7 @@ PIPELINE_FREQ_MIN = 15  # update every 15 minutes
 commands = [
     "python update_hourly_forecast.py",
     "python run_forecast.py",
-    "python send_data_to_api.py"
+    "python send_data_to_api.py --source prophet"
 ]
 
 def log_banner(msg):
