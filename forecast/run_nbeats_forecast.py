@@ -23,8 +23,12 @@ DEFAULT_MODEL_DIR = str(
 )
 
 
-def load_archives(handler):
-    """Load and concatenate all monthly archive CSVs."""
+def load_archives(handler, load_data_fn):
+    """Load and concatenate all monthly archive CSVs.
+
+    Uses twilight.utils.load_data which handles both 'timestamp'/'ds'
+    and 'mean'/'y' column conventions automatically.
+    """
     archive_dir = handler.archive_dir
     csvs = sorted(archive_dir.glob("*/forecast_*.csv"))
     if not csvs:
@@ -32,18 +36,15 @@ def load_archives(handler):
 
     dfs = []
     for p in csvs:
-        df = pd.read_csv(p)
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
-        if df["timestamp"].dt.tz is not None:
-            df["timestamp"] = df["timestamp"].dt.tz_convert("UTC").dt.tz_localize(None)
-        df = df.rename(columns={"timestamp": "ds", "mean": "y"})
-        # Keep min/max for the unified output
-        cols = ["ds", "y"]
-        for c in ("min", "max"):
-            if c in df.columns:
-                cols.append(c)
-        dfs.append(df[cols].dropna(subset=["ds", "y"]))
-        print(f"  Loaded {p.name}: {len(dfs[-1])} rows")
+        try:
+            df = load_data_fn(str(p))
+            dfs.append(df)
+            print(f"  Loaded {p.name}: {len(df)} rows")
+        except Exception as e:
+            print(f"  Skipped {p.name}: {e}")
+
+    if not dfs:
+        raise FileNotFoundError("No valid archive CSVs found")
 
     df = (
         pd.concat(dfs, ignore_index=True)
@@ -74,6 +75,7 @@ def main():
     sys.path.insert(0, str(twilight_pkg))
 
     from twilight import DailyPredictionModule
+    from twilight.utils import load_data
 
     handler = DataFileHandler()
 
@@ -83,7 +85,7 @@ def main():
 
     # Step 1: Load data
     print("\n[1/3] Loading archive data...")
-    df = load_archives(handler)
+    df = load_archives(handler, load_data)
 
     # Step 2: Run model
     print("\n[2/3] Running DailyPredictionModule...")

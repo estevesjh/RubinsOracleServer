@@ -16,6 +16,7 @@ def floor_dt(dt, freq="15min"):
 
 ENVS = {
     "slac": Path("/sdf/data/rubin/user/esteves/forecast"),
+    "dev": Path("/sdf/data/rubin/user/esteves/forecast_dev"),
     "local": Path(__file__).resolve().parent.parent / "database",
 }
 
