@@ -93,6 +93,22 @@ def main():
     result = module.run(df)
     print(f"  Result: {len(result)} rows")
 
+    # Twilight forecast summary
+    sunset_rows = result[result["sunset"] == "true"] if "sunset" in result.columns else result[result["sunset"] == True]
+    if len(sunset_rows) > 0:
+        tw_row = sunset_rows.iloc[-1]
+        print(f"  [twilight] time={tw_row['timestamp']}, "
+              f"forecast={tw_row['forecast']:.1f} C")
+    else:
+        # Find forecast closest to h_to_tw = 0
+        if "h_to_tw" in result.columns:
+            htw = pd.to_numeric(result["h_to_tw"], errors="coerce")
+            if htw.notna().any():
+                closest = htw.abs().idxmin()
+                tw_row = result.loc[closest]
+                print(f"  [twilight] h_to_tw={tw_row['h_to_tw']:.1f}h, "
+                      f"forecast={tw_row['forecast']:.1f} C")
+
     # Step 3: Save
     out_path = handler.base_dir / "temp_forecast_nbeats.csv"
     result.to_csv(out_path, index=False)
