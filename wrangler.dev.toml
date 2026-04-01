@@ -1,0 +1,7 @@
+name = "rubin-weather-forecast-dev"
+main = "cloudflare_worker.js"
+compatibility_date = "2025-08-07"
+
+[[kv_namespaces]]
+binding = "TEMP_KV"
+id = "ae2af954b6dc4bf6b4a577f60047dc2e"

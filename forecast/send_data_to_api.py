@@ -7,13 +7,15 @@ import os
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--source", default="prophet", choices=["prophet", "nbeats"])
+parser.add_argument("--csv", default=None, help="Path to CSV file (default: auto from DataFileHandler)")
 args = parser.parse_args()
 
 handler = DataFileHandler()
-csv_path = handler.get_latest_path()
+csv_path = args.csv or handler.get_latest_path()
 
 URLS = {
     "slac": "https://rubin-weather-forecast.jesteves.workers.dev/api/update",
+    "dev": "https://rubin-weather-forecast-dev.jesteves.workers.dev/api/update",
     "local": "http://localhost:8787/api/update",
 }
 env = os.environ.get("FORECAST_ENV", "slac")
