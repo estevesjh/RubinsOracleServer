@@ -16,3 +16,4 @@ clouds/acha_probe_cache/
 
 # Wrangler local state
 .wrangler/
+forecast/lightning_logs/

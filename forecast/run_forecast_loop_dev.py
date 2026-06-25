@@ -58,17 +58,14 @@ def run_once(model_dir):
     if not ok:
         print("[WARN] EFD update failed, continuing with existing data...\n")
 
-    # Step 2: Prophet forecast + upload
-    log_banner("Prophet")
-    ok = run_cmd(f"python {forecast_dir / 'run_forecast.py'}")
-    if ok:
-        run_cmd(f"python {forecast_dir / 'send_data_to_api.py'} --source prophet")
-
-    # Step 3: NBEATSx forecast + upload
+    # Step 2: NBEATSx (ts_weathernbeats) forecast + upload.
+    # The dev loop only owns the nbeats source; the prophet source is uploaded
+    # by the production loop (run_forecast_loop.py), so re-running/uploading
+    # prophet here is redundant -- it doubles the KV writes and a prophet hang
+    # used to block the nbeats step.  NBEATSx runs first and is the only upload.
     log_banner("NBEATSx")
-    nbeats_csv = None
     ok = run_cmd(
-        f"python {forecast_dir / 'run_nbeats_forecast.py'} --model-dir {model_dir}"
+        f"python {forecast_dir / 'run_weathernbeats_forecast.py'} --bundle {model_dir}"
     )
     if ok:
         # Find the output file
@@ -109,11 +106,11 @@ def main():
     parser = argparse.ArgumentParser(description="Dev forecast loop (Prophet + NBEATSx)")
     parser.add_argument(
         "--model-dir",
-        default=str(
-            Path(__file__).resolve().parent.parent.parent
-            / "rubin-twilight-forecast" / "results" / "model"
+        default=(
+            "/sdf/home/e/esteves/sitcom-analysis/ts_weathernbeats/"
+            "models/nbeatsx_ridge_v0.1.0"
         ),
-        help="Path to trained NBEATSx model directory",
+        help="Path to the ts_weathernbeats model bundle",
     )
     parser.add_argument(
         "--once", action="store_true",

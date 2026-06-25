@@ -83,16 +83,46 @@ class DataFileHandler:
         df.index.freq = self.freq
         return df
 
+    def full_month_index(self, dt: datetime) -> pd.DatetimeIndex:
+        """The complete 15-min UTC grid for the whole local month containing `dt`.
+
+        Spans the first instant of the local month through the last `freq` step
+        before the next month, so the archive always carries a row for every
+        slot of the month -- future slots simply hold NaN until their data
+        arrives.  This is what keeps the rolling window from truncating at the
+        last *arrived* timestamp.
+        """
+        tz_chile = pytz.timezone("America/Santiago")
+        local = ensure_utc_timezone(dt).astimezone(tz_chile)
+        first = local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if first.month == 12:
+            nxt = first.replace(year=first.year + 1, month=1)
+        else:
+            nxt = first.replace(month=first.month + 1)
+        start_utc = pd.Timestamp(first).tz_convert("UTC")
+        end_utc = pd.Timestamp(nxt).tz_convert("UTC") - pd.Timedelta(self.freq)
+        return pd.date_range(start_utc, end_utc, freq=self.freq, tz="UTC")
+
     def update_monthly_archive(self, dt: datetime):
         df_monthly = self.read_monthly_df(dt)
         df_daily = self.read_cache_df(dt)
-        
+
         if df_daily.empty:
             print(f"[WARN] No daily cache data to update monthly for {dt.strftime('%Y-%m-%d')}")
             return
-        # Update monthly with daily
-        df_monthly.update(df_daily)
-        
+        # Merge daily into monthly.  DataFrame.update() only overwrites rows that
+        # already exist in the monthly frame -- it silently drops *new* daily
+        # timestamps (e.g. everything after the last archived row), which cut the
+        # window off at the last archived time.  combine_first unions the indices,
+        # preferring the daily (fresher) values and keeping monthly history.
+        df_monthly = df_daily.combine_first(df_monthly).sort_index()
+        df_monthly = df_monthly[df_daily.columns]
+        # Reindex onto the complete month grid so every slot of the month exists
+        # (NaN for slots whose data has not arrived yet).  The archive is thus
+        # always full-length and the window can never be cut short by a missing
+        # tail row.
+        df_monthly = df_monthly.reindex(self.full_month_index(dt))
+
         # Write back
         month_path = self.get_monthly_archive_path(dt)
         month_path.parent.mkdir(parents=True, exist_ok=True)
@@ -137,6 +167,18 @@ class DataFileHandler:
         # Build result, prefer cache over archive
         out = pd.DataFrame(index=idx, columns=monthly_df.columns)
         out.update(monthly_df)
+
+        # Fill isolated single-sample gaps (notably the 00:00-local / 04:00-UTC
+        # day-boundary NaN baked into the archive: the per-day resample drops the
+        # exact boundary sample even though 03:45 and 04:15 are present).  Only
+        # 1-step gaps between two good values are bridged (limit=1, both sides),
+        # so genuine outages of >=2 samples stay NaN and are not invented.
+        num_cols = ["min", "mean", "max"]
+        cols = [c for c in num_cols if c in out.columns]
+        out[cols] = out[cols].apply(pd.to_numeric, errors="coerce")
+        out[cols] = out[cols].interpolate(
+            method="linear", limit=1, limit_area="inside"
+        )
         return out
 
     def write_latest(self, df: pd.DataFrame):

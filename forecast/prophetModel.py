@@ -40,8 +40,16 @@ class ProphetTwilightValidator:
             df = self.prepare_df(df)
 
         self.df = df
-        self.df['is_evening_twilight'] = self.df['is_evening_twilight'].astype(bool)
-        self.df['is_morning_twilight'] = self.df['is_morning_twilight'].astype(bool)
+        # The rolling-window reindex leaves NaN in the twilight-flag columns
+        # (object dtype).  A bare ``.astype(bool)`` maps every NaN to True
+        # (non-empty -> truthy), which floods the whole forecast region with
+        # spurious sunset/sunrise events.  Treat NaN as False instead.
+        for _col in ("is_evening_twilight", "is_morning_twilight"):
+            self.df[_col] = (
+                self.df[_col].map({True: True, False: False, "True": True, "False": False})
+                .fillna(False)
+                .astype(bool)
+            )
         
         self.filename = None  # optional, for reference
         self.set_sunrise_twilight_times()
@@ -325,7 +333,7 @@ class ProphetTwilightValidator:
         """
         raise NotImplementedError("Kalman filter application is not implemented yet.")
 
-    def to_csv(self, merged, out_path):
+    def to_csv(self, merged, out_path, source="prophet"):
         # merged['trend-monthly'] = merged['trend']
         # 1. robust column renaming to canonical website schema -------------
         rename_map = {
@@ -336,7 +344,7 @@ class ProphetTwilightValidator:
         }
         merged = merged.rename(columns=rename_map)
 
-        merged["forecast_source"] = "prophet"
+        merged["forecast_source"] = source
 
         # 2. keep only what the site needs, coerce dtypes -------------------
         keep = [
