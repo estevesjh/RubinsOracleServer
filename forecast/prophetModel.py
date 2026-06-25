@@ -348,7 +348,7 @@ class ProphetTwilightValidator:
 
         # 2. keep only what the site needs, coerce dtypes -------------------
         keep = [
-            "timestamp", "temp_actual", "temp_min", "temp_max",
+            "timestamp", "temp_actual", "temp_smoothed", "temp_min", "temp_max",
             "forecast", "forecast_min", "forecast_max",
             "sunset", "sunrise", "h_to_tw", "forecast_source",
         ]

@@ -103,14 +103,16 @@ def main():
         exit(1)
 
     # Smooth the Weather Tower actual series with the same Gaussian (1 h) +
-    # unbiased right-edge blend used for the forecast curve, so the black actual
-    # line on the dashboard is denoised consistently.  Only the observed
+    # unbiased right-edge blend used for the forecast curve.  Keep the raw signal
+    # in temp_actual (grey mid curve on the dashboard) and write the denoised
+    # series to a new temp_smoothed column (black line).  Only the observed
     # (non-NaN) samples are smoothed; their positions are preserved.
     from weathernbeatsModel import _gaussian_smooth_rightpad
     actual = pd.to_numeric(merged["temp_actual"], errors="coerce")
     obs_mask = actual.notna().to_numpy()
+    merged["temp_smoothed"] = actual
     if obs_mask.sum() >= 4:
-        merged.loc[obs_mask, "temp_actual"] = _gaussian_smooth_rightpad(
+        merged.loc[obs_mask, "temp_smoothed"] = _gaussian_smooth_rightpad(
             actual[obs_mask].to_numpy(dtype=float)
         )
 

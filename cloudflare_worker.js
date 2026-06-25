@@ -151,9 +151,10 @@ export default {
       var header = lines.shift().split(',');
       var idx = function(n) { return header.indexOf(n); };
       var safe = function(v) { var n = parseFloat(v); return isNaN(n) ? null : +n.toFixed(1); };
-      var d = { tempMin: [], tempActual: [], tempMax: [],
+      var d = { tempMin: [], tempActual: [], tempSmoothed: [], tempMax: [],
                 fcMin: [], forecast: [], fcMax: [],
                 sunset: [], sunrise: [], source: null, latestPastTs: null };
+      var hasSmoothed = idx('temp_smoothed') >= 0;
       lines.forEach(function(l) {
         if (!l.trim()) return;
         var c = l.split(',');
@@ -162,6 +163,7 @@ export default {
         if (c[idx('sunset')] && c[idx('sunset')].toLowerCase() === 'true') d.sunset.push(ts);
         if (c[idx('sunrise')] && c[idx('sunrise')].toLowerCase() === 'true') d.sunrise.push(ts);
         d.tempActual.push([ts, safe(c[idx('temp_actual')])]);
+        d.tempSmoothed.push([ts, hasSmoothed ? safe(c[idx('temp_smoothed')]) : safe(c[idx('temp_actual')])]);
         d.forecast.push([ts, safe(c[idx('forecast')])]);
         d.tempMin.push([ts, safe(c[idx('temp_min')])]);
         d.tempMax.push([ts, safe(c[idx('temp_max')])]);
@@ -212,10 +214,29 @@ export default {
           });
 
           var series = [
-            { name: '(max-min)', type: 'arearange', data: obsBand,
+            { name: 'Weather Tower range', type: 'arearange', data: obsBand,
               color: '#8080804d', lineWidth: 0, marker: { enabled: false }, zIndex: 0 },
-            { name: 'Weather Tower', data: primary.tempActual, color: 'black', zIndex: 2, connectNulls: false }
+            { name: 'Weather Tower (raw)', data: primary.tempActual, color: 'gray',
+              lineWidth: 1, dashStyle: 'ShortDot', marker: { enabled: false }, zIndex: 1, connectNulls: false },
+            { name: 'Smoothed Temperature', data: primary.tempSmoothed, color: 'black', zIndex: 2, connectNulls: false }
           ];
+
+          // Green skill-check curve: the live NBEATSx forecast shifted back 3 h.
+          // The live curve only covers the future [now, now+horizon]; sliding it
+          // -3 h lays it over the most recent actuals ([now-3h, now]) so the user
+          // can eyeball how the forecast tracks reality.  (Client-side
+          // approximation of a forecast issued 3 h ago, not a true re-issue.)
+          var THREE_H_MS = 3 * 3600 * 1000;
+          results.forEach(function(d) {
+            if (!d || (d.source || 'prophet') !== 'nbeats') return;
+            var lagged = d.forecast
+              .map(function(p) { return [p[0] - THREE_H_MS, p[1]]; })
+              .filter(function(p) { return p[1] !== null; });
+            if (lagged.length) {
+              series.push({ name: 'NBEATSx (3 h ago)', data: lagged, color: '#008000',
+                lineWidth: 2, dashStyle: 'Dash', marker: { enabled: false }, zIndex: 1, connectNulls: false });
+            }
+          });
 
           results.forEach(function(d) {
             if (!d) return;
@@ -250,7 +271,7 @@ export default {
                 var s = '<b>' + Highcharts.dateFormat('%Y-%m-%d %H:%M', this.x) + '</b><br/>';
                 this.points.forEach(function(p) {
                   var n = p.series.name, col = p.color;
-                  if (n.indexOf('cfi') >= 0 || n === '(max-min)') {
+                  if (n.indexOf('cfi') >= 0 || n.indexOf('range') >= 0) {
                     if (p.point.high != null && p.point.low != null)
                       s += '<span style="color:' + col + '">\\u25CF</span> ' + n +
                            ': <b>' + (p.point.high - p.point.low).toFixed(2) + '\\u00B0C</b><br/>';
