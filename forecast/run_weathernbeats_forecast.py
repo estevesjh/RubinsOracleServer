@@ -45,6 +45,14 @@ def main():
         default=None,
         help="Path to the ts_weathernbeats model bundle (default: package default).",
     )
+    parser.add_argument(
+        "--lag-hours",
+        type=float,
+        default=3.0,
+        help="Also issue a forecast this many hours in the past (causal) and "
+             "store it in forecast_3h* columns for the dashboard skill-check "
+             "curve. Set 0 to disable.",
+    )
     args = parser.parse_args()
 
     tz_chile = pytz.timezone("America/Santiago")
@@ -92,6 +100,23 @@ def main():
             forecast = model.run(rolling_df_parsed, test_end_local=test_end_local)
 
         merged = rolling_df.merge(forecast, on='ds', how='left')
+
+        # Real lagged forecast for the dashboard skill-check curve: re-issue the
+        # forecast as of `lag_hours` ago (causal -- only data up to that moment),
+        # so its overlap with the observed actuals shows how the model actually
+        # did.  Reuse the loaded model (no second bundle load).  Stored in
+        # forecast_3h* columns, merged on the same ds grid.
+        if args.lag_hours and args.lag_hours > 0:
+            lag_end = test_end_local - pd.Timedelta(hours=args.lag_hours)
+            print(f"[INFO] Lagged forecast issued at {lag_end} (lag {args.lag_hours} h).")
+            with silence_stdout_stderr():
+                lagged = model.run(rolling_df_parsed, test_end_local=lag_end)
+            lagged = lagged.rename(columns={
+                "yhat": "forecast_3h",
+                "yhat_lower": "forecast_3h_min",
+                "yhat_upper": "forecast_3h_max",
+            })[["ds", "forecast_3h", "forecast_3h_min", "forecast_3h_max"]]
+            merged = merged.merge(lagged, on="ds", how="left")
 
     merged.rename(columns={"min": "temp_min", "max": "temp_max", "y": "temp_actual", "is_evening_twilight": "sunset",
     "is_morning_twilight": "sunrise"

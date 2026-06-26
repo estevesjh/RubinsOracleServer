@@ -350,6 +350,7 @@ class ProphetTwilightValidator:
         keep = [
             "timestamp", "temp_actual", "temp_smoothed", "temp_min", "temp_max",
             "forecast", "forecast_min", "forecast_max",
+            "forecast_3h", "forecast_3h_min", "forecast_3h_max",
             "sunset", "sunrise", "h_to_tw", "forecast_source",
         ]
         keep = [c for c in keep if c in merged.columns]
