@@ -229,7 +229,7 @@ export default {
             { name: 'Smoothed Temperature', data: primary.tempSmoothed, color: 'black', zIndex: 2, connectNulls: false }
           ];
 
-          // Green skill-check curve: a *real* forecast re-issued 3 h ago (causal,
+          // Green skill-check curve: a *real* forecast re-issued ~6 h ago (causal,
           // forecast_3h* columns from the runner).  It overlaps the observed
           // actuals over [issued, now] so the user sees how the model actually
           // did, then continues a little past now.
@@ -238,13 +238,13 @@ export default {
             var band3h = d.fc3hMin.map(function(p, i) { return [p[0], p[1], d.fc3hMax[i][1]]; })
               .filter(function(p) { return p[1] !== null && p[2] !== null; });
             if (band3h.length) {
-              series.push({ name: 'NBEATSx (3 h ago) 68% cfi', type: 'arearange', data: band3h,
+              series.push({ name: 'NBEATSx (approx. 6 h ago) 68% cfi', type: 'arearange', data: band3h,
                 color: 'rgba(0,128,0,0.15)', lineWidth: 0, marker: { enabled: false }, zIndex: 0,
                 showInLegend: false });
             }
             var line3h = d.fc3h.filter(function(p) { return p[1] !== null; });
             if (line3h.length) {
-              series.push({ name: 'NBEATSx (3 h ago)', data: line3h, color: '#008000',
+              series.push({ name: 'NBEATSx (approx. 6 h ago)', data: line3h, color: '#008000',
                 lineWidth: 2, dashStyle: 'Dash', marker: { enabled: false }, zIndex: 1, connectNulls: false });
             }
           });

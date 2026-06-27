@@ -181,6 +181,152 @@ class DataFileHandler:
         )
         return out
 
+    # ── NBEATSx per-cycle forecast cache ──────────────────────────────────
+    # Each forecast cycle saves ONLY its output forecast (ds + yhat / lower /
+    # upper) as a JSON file under archive/<YYYY-MM>/runs/, keyed by the solar
+    # date and the issuance step-of-day on the model's 48-step/day solar clock.
+    # The dashboard's lag skill-check curve is then a *load* of the cycle 12
+    # solar steps earlier (12/48 = a quarter solar day) -- no second NBEATSx
+    # pass.  Solar-step keying is exact integer arithmetic, independent of the
+    # warped wall-clock spacing.
+    STEPS_PER_SOLAR_DAY = 48
+
+    def runs_dir(self, dt: datetime) -> Path:
+        """Directory holding per-cycle forecast files for the month of ``dt``."""
+        d = self.get_monthly_archive_path(dt).parent / "runs"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    @staticmethod
+    def _run_stub(solar_date: str, step_of_day: int) -> str:
+        """Filename stub from a solar date (YYYY-MM-DD) and step index (0..47)."""
+        ymd = solar_date.replace("-", "")
+        return f"nbeats_{ymd}_s{int(step_of_day):02d}"
+
+    @classmethod
+    def _solar_ordinal(cls, solar_date: str, step_of_day: int) -> int:
+        """Global solar step ordinal: day_number*48 + step (for +/- step math)."""
+        d = datetime.strptime(solar_date, "%Y-%m-%d").date()
+        return d.toordinal() * cls.STEPS_PER_SOLAR_DAY + int(step_of_day)
+
+    @classmethod
+    def _ordinal_to_stub(cls, ordinal: int) -> str:
+        """Inverse of :meth:`_solar_ordinal` -> filename stub."""
+        day_num, step = divmod(ordinal, cls.STEPS_PER_SOLAR_DAY)
+        d = datetime.fromordinal(day_num).date()
+        return cls._run_stub(d.isoformat(), step)
+
+    def save_run(self, forecast: pd.DataFrame, solar_date: str, step_of_day: int):
+        """Persist a cycle's output forecast keyed by solar date + step-of-day.
+
+        ``forecast`` is the output frame (``ds, yhat, yhat_lower, yhat_upper``).
+        Stored as a single JSON file -- no parquet, no heavy curve.
+        """
+        import json
+        stub = self._run_stub(solar_date, step_of_day)
+        path = self.runs_dir(datetime.strptime(solar_date, "%Y-%m-%d")) / f"{stub}.json"
+        payload = {
+            "solar_date": solar_date,
+            "step_of_day": int(step_of_day),
+            "ds": [pd.Timestamp(t).isoformat() for t in pd.to_datetime(forecast["ds"])],
+            "yhat": [float(v) for v in forecast["yhat"]],
+            "yhat_lower": [float(v) for v in forecast["yhat_lower"]],
+            "yhat_upper": [float(v) for v in forecast["yhat_upper"]],
+        }
+        with open(path, "w") as fh:
+            json.dump(payload, fh)
+        return path
+
+    def load_run_steps_back(self, solar_date: str, step_of_day: int, steps_back: int = 12):
+        """Load the forecast issued ``steps_back`` solar steps before the given
+        (solar_date, step_of_day).  Returns the output DataFrame or ``None`` if
+        that cycle was never cached (e.g. loop warm-up)."""
+        import json
+        target_ord = self._solar_ordinal(solar_date, step_of_day) - int(steps_back)
+        stub = self._ordinal_to_stub(target_ord)
+        # Files live in the month dir of the *target* solar date.
+        day_num = target_ord // self.STEPS_PER_SOLAR_DAY
+        target_date = datetime.fromordinal(day_num)
+        path = self.runs_dir(target_date) / f"{stub}.json"
+        if not path.exists():
+            return None
+        with open(path) as fh:
+            p = json.load(fh)
+        return pd.DataFrame({
+            "ds": pd.to_datetime(p["ds"]),
+            "yhat": p["yhat"],
+            "yhat_lower": p["yhat_lower"],
+            "yhat_upper": p["yhat_upper"],
+        })
+
+    def load_run_nearest_time(self, target_local: pd.Timestamp, tol_hours: float = 2.0):
+        """Load the cached forecast whose issuance is nearest ``target_local``.
+
+        ``target_local`` is a tz-naive Chile-local Timestamp (typically
+        ``now - lag_hours``).  Each cached file's issuance origin is its first
+        forecast timestamp (``ds[0]``), so we scan the recent run files, pick the
+        one whose origin is closest to the target, and return it if within
+        ``tol_hours``.  This is robust to the solar-day rollover that broke the
+        step-subtraction lookup (subtracting 12 solar steps from a morning step
+        wraps back across the whole previous night, landing ~30 h ago).
+
+        Returns the output DataFrame, or ``None`` if nothing is within tolerance.
+        """
+        import json
+        target = pd.Timestamp(target_local)
+        if target.tzinfo is not None:
+            target = target.tz_localize(None)
+        # Scan this month's runs and the previous month's (covers a target that
+        # falls just before a month boundary).
+        rdir = self.runs_dir(target_local if isinstance(target_local, datetime)
+                             else target.to_pydatetime())
+        files = sorted(rdir.glob("nbeats_*_s*.json"))
+        # Also include the previous month dir if the target is early in a month.
+        prev = (target.replace(day=1) - pd.Timedelta(days=1)).to_pydatetime()
+        prev_dir = self.runs_dir(prev)
+        if prev_dir != rdir:
+            files += sorted(prev_dir.glob("nbeats_*_s*.json"))
+        best, best_dt, best_payload = None, None, None
+        for f in files:
+            try:
+                p = json.load(open(f))
+            except (ValueError, OSError):
+                continue
+            ds = pd.to_datetime(p["ds"])
+            if len(ds) == 0:
+                continue
+            origin = pd.Timestamp(ds.min())
+            if origin.tzinfo is not None:
+                origin = origin.tz_localize(None)
+            dt = abs((origin - target).total_seconds())
+            if best_dt is None or dt < best_dt:
+                best, best_dt, best_payload = f, dt, p
+        if best is None or best_dt > tol_hours * 3600.0:
+            return None
+        p = best_payload
+        return pd.DataFrame({
+            "ds": pd.to_datetime(p["ds"]),
+            "yhat": p["yhat"],
+            "yhat_lower": p["yhat_lower"],
+            "yhat_upper": p["yhat_upper"],
+        })
+
+    def prune_runs(self, dt: datetime, keep_days: float = 2.0):
+        """Delete cached forecast files older than ``keep_days`` before ``dt``."""
+        cutoff_date = (
+            pd.Timestamp(ensure_utc_timezone(dt)).tz_convert("America/Santiago")
+            - pd.Timedelta(days=keep_days)
+        ).date()
+        rdir = self.runs_dir(dt)
+        for f in rdir.glob("nbeats_*_s*.json"):
+            try:
+                ymd = f.stem.split("_")[1]
+                fdate = datetime.strptime(ymd, "%Y%m%d").date()
+            except (IndexError, ValueError):
+                continue
+            if fdate < cutoff_date:
+                f.unlink(missing_ok=True)
+
     def write_latest(self, df: pd.DataFrame):
         df.to_csv(self.latest_file, index=True)
 

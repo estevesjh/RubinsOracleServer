@@ -35,6 +35,14 @@ RIGHT_BLEND_TAU_STEPS = 2.0
 # Number of trailing points the right-edge linear trend is fit to.
 RIGHT_FIT_POINTS = 4
 
+# The model's solar clock has 48 steps per solar day (phi in [0,1)).
+STEPS_PER_SOLAR_DAY = 48
+
+
+def solar_step_of_day(phi: float) -> int:
+    """Solar-grid step index within the day (0..47) for a solar phase ``phi``."""
+    return int(round((float(phi) % 1.0) * STEPS_PER_SOLAR_DAY)) % STEPS_PER_SOLAR_DAY
+
 
 def _gaussian_smooth_rightpad(
     y: np.ndarray,
@@ -100,6 +108,28 @@ class NBEATSxRidge:
         model works in UTC on the solar grid, so ds is converted local->UTC for
         feature building and the resulting curve is mapped back to local naive
         time to match the Prophet output frame.
+
+        Thin wrapper over :meth:`forecast_curve` (the expensive NBEATSx pass)
+        and :meth:`curve_to_output` (cheap resample + smooth).  Kept separate so
+        a saved curve can be replayed without re-running the model -- see the
+        dashboard lag-3 h skill-check curve, which just loads a prior cycle.
+        """
+        curve = self.forecast_curve(train, test_end_local)
+        return self.curve_to_output(curve)
+
+    def forecast_curve(
+        self, train: pd.DataFrame, test_end_local: pd.Timestamp
+    ) -> pd.DataFrame:
+        """Run the NBEATSx + Ridge model and return the raw solar-grid curve.
+
+        This is the expensive stage (NBEATSx forward pass, ~minutes on CPU).
+        Returns the full ``predict`` curve -- ``ds, ds_real, SolarTime,
+        slot_phi, T_nb`` (Stage-1 NBEATSx) and ``T_forecast``/``T_std``
+        (Stage-2 corrected) -- so it can be cached to disk and later either
+        replayed (cheap) or re-corrected by Ridge without re-running NBEATSx.
+
+        The issuance feature row Ridge consumes is stashed in ``curve.attrs
+        ['issuance']`` (a dict) for that future ridge re-run.
         """
         obs = train.dropna(subset=["y"]).sort_values("ds").reset_index(drop=True)
         # Forecast is issued at test_end_local: only observations up to that
@@ -119,13 +149,74 @@ class NBEATSxRidge:
 
         grid = FeatureBuilder.build_grid(src)
         curve = self.model.predict(grid)
+        # Stash the issuance feature row (last clean lookback row) so Ridge can
+        # be re-applied to a cached curve later without re-running NBEATSx.
+        clean = grid.dropna(subset=["y"])
+        issuance = clean.iloc[-1]
+        curve.attrs["issuance"] = issuance.to_dict()
+        curve.attrs["last_obs_real"] = pd.Timestamp(src["ds"].iloc[-1]).isoformat()
+        # Issuance position on the model's 48-step/day SOLAR clock.  The model
+        # lives on solar phase phi in [0,1); "N steps ago" means N rows back on
+        # this grid (12/48 = a quarter solar day) -- NOT N wall-clock hours, since
+        # day steps compress and night steps stretch.  We expose a single global
+        # integer solar step so the cache can be keyed by it: identical solar
+        # positions always map to the same step, and the 12-steps-ago lookup is
+        # exact integer arithmetic.
+        issuance_phi = float(issuance["SolarTime"])
+        issuance_real = pd.Timestamp(issuance["ds_real"])  # UTC-naive
+        issuance_date_local = (
+            issuance_real.tz_localize("UTC").tz_convert("America/Santiago").date()
+        )
+        curve.attrs["issuance_phi"] = issuance_phi
+        curve.attrs["solar_step_of_day"] = solar_step_of_day(issuance_phi)
+        curve.attrs["solar_date"] = issuance_date_local.isoformat()
+        return curve
 
+    def issuance_solar_key(self, train: pd.DataFrame, test_end_local: pd.Timestamp):
+        """(solar_date, step_of_day) for an issuance WITHOUT running the model.
+
+        Builds only the cheap solar grid (no NBEATSx predict) so a backfill can
+        check whether a cached file already exists before paying for inference.
+        """
+        obs = train.dropna(subset=["y"]).sort_values("ds").reset_index(drop=True)
+        if test_end_local is not None:
+            end = pd.Timestamp(test_end_local)
+            end = end.tz_localize(None) if end.tzinfo is not None else end
+            obs = obs[pd.to_datetime(obs["ds"]) <= end].reset_index(drop=True)
+        ds_utc = (
+            pd.to_datetime(obs["ds"]).dt.tz_localize("America/Santiago")
+            .dt.tz_convert("UTC").dt.tz_localize(None)
+        )
+        src = pd.DataFrame(
+            {"ds": ds_utc, "y": pd.to_numeric(obs["y"], errors="coerce")}
+        ).dropna()
+        grid = FeatureBuilder.build_grid(src)
+        clean = grid.dropna(subset=["y"])
+        issuance = clean.iloc[-1]
+        phi = float(issuance["SolarTime"])
+        real = pd.Timestamp(issuance["ds_real"])
+        solar_date = (
+            real.tz_localize("UTC").tz_convert("America/Santiago").date().isoformat()
+        )
+        return solar_date, solar_step_of_day(phi)
+
+    def curve_to_output(self, curve: pd.DataFrame) -> pd.DataFrame:
+        """Resample a raw solar-grid curve to the regular local 15-min output.
+
+        Cheap (numpy interp + Gaussian smooth, no model).  ``curve`` is what
+        :meth:`forecast_curve` returns -- either fresh or loaded from cache.
+        """
         # The curve sits on the warped solar clock (irregular wall-clock steps).
         # Resample onto the regular 15-min grid -- starting at the last
         # observation -- so the forecast ds aligns with the rolling-window grid
         # for the merge (exactly as the Prophet output does).  The variable
         # day/night step is preserved in the *values* via interpolation.
-        last_obs = pd.Timestamp(src["ds"].iloc[-1])
+        last_obs_iso = curve.attrs.get("last_obs_real")
+        if last_obs_iso is not None:
+            last_obs = pd.Timestamp(last_obs_iso)
+        else:
+            # Fallback: the curve's first real timestamp is one step past issuance.
+            last_obs = pd.Timestamp(curve["ds_real"].min())
         cx = pd.to_datetime(curve["ds_real"]).astype("int64").to_numpy() / 1e9
         gds = pd.date_range(last_obs, pd.Timestamp(curve["ds_real"].max()), freq=self.freq)
         gx = gds.astype("int64").to_numpy() / 1e9
