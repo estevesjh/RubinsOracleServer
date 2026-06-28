@@ -100,6 +100,19 @@ class NBEATSxRidge:
     def __init__(self, freq: str = "15min", bundle: str = DEFAULT_BUNDLE):
         self.freq = freq
         self.model = WeatherForecastModel.load(bundle)
+        # Disable the Lightning TensorBoard logger on the loaded NeuralForecast
+        # model.  Each predict() otherwise spins a Trainer that writes a fresh
+        # ``lightning_logs/version_N`` dir in the CWD -- once per 15-min cycle,
+        # forever -- which silently filled the home quota and crashed the loop
+        # with "No space left on device".  Inference needs no logging.
+        try:
+            for m in getattr(self.model.bundle, "nbeatsx").models:
+                tk = dict(getattr(m, "trainer_kwargs", {}) or {})
+                tk["logger"] = False
+                tk["enable_checkpointing"] = False
+                m.trainer_kwargs = tk
+        except Exception:
+            pass  # never let logging-cleanup break inference
 
     def run(self, train: pd.DataFrame, test_end_local: pd.Timestamp) -> pd.DataFrame:
         """Forecast from the last observation; return ds/yhat/yhat_lower/yhat_upper.

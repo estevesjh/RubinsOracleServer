@@ -106,11 +106,9 @@ def main():
     parser = argparse.ArgumentParser(description="Dev forecast loop (Prophet + NBEATSx)")
     parser.add_argument(
         "--model-dir",
-        default=(
-            "/sdf/home/e/esteves/sitcom-analysis/ts_weathernbeats/"
-            "models/nbeatsx_ridge_v0.1.0"
-        ),
-        help="Path to the ts_weathernbeats model bundle",
+        default="/sdf/data/rubin/user/esteves/models/nbeatsx_ridge_v0.2.0",
+        help="Path to the ts_weathernbeats model bundle "
+             "(retrained 2023-10 .. 2026-06, stored on the data volume)",
     )
     parser.add_argument(
         "--once", action="store_true",
