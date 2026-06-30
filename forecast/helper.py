@@ -161,8 +161,31 @@ class DataFileHandler:
         # Update monthly archive with latest cache
         self.update_monthly_archive(now_local)
 
-        # Then the relevant month 
-        monthly_df = self.read_monthly_df(end).reindex(idx)
+        # The rolling window can straddle a month boundary (e.g. last week of
+        # June reaches into July).  Read EVERY month the window spans -- not just
+        # the month of `end` -- and tolerate a month whose archive does not exist
+        # yet (the upcoming month before any of its data has arrived): it simply
+        # contributes no rows, and those slots stay NaN until filled from cache.
+        start_local = start.astimezone(pytz.timezone("America/Santiago"))
+        end_local = end.astimezone(pytz.timezone("America/Santiago"))
+        month_anchors = pd.date_range(
+            start_local.replace(day=1), end_local.replace(day=1), freq="MS",
+            tz="America/Santiago",
+        )
+        monthly_parts = []
+        for anchor in month_anchors:
+            try:
+                monthly_parts.append(self.read_monthly_df(anchor))
+            except FileNotFoundError:
+                print(f"[WARN] No archive for {anchor.strftime('%Y-%m')} yet; "
+                      "skipping (slots filled from cache).")
+        if monthly_parts:
+            monthly_df = pd.concat(monthly_parts).sort_index()
+            monthly_df = monthly_df[~monthly_df.index.duplicated(keep="last")]
+            monthly_df = monthly_df.reindex(idx)
+        else:
+            # No archive at all -- empty frame with the expected numeric columns.
+            monthly_df = pd.DataFrame(index=idx, columns=["min", "mean", "max"])
 
         # Build result, prefer cache over archive
         out = pd.DataFrame(index=idx, columns=monthly_df.columns)
