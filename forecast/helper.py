@@ -170,8 +170,20 @@ class DataFileHandler:
         # setup the new index
         idx = pd.date_range(start, end, freq=self.freq, tz="UTC")
 
-        # Update monthly archive with latest cache
-        self.update_monthly_archive(now_local)
+        # Merge every daily cache within the window into the monthly archive --
+        # not just today's.  If the pipeline was down for a few days, the EFD
+        # step still wrote those days' daily caches, but only *today's* would be
+        # merged, leaving the outage days permanently blank in the archive even
+        # after recovery.  Re-merging the whole window is idempotent and makes
+        # recovery self-healing: any day whose data arrived while the forecast
+        # was crashing gets backfilled on the next successful run.
+        for day in pd.date_range(start_local_day := start.astimezone(
+                pytz.timezone("America/Santiago")).date(),
+                now_local.date(), freq="D"):
+            day_local = pytz.timezone("America/Santiago").localize(
+                datetime(day.year, day.month, day.day, 12))
+            if self.get_daily_cache_path(day_local).exists():
+                self.update_monthly_archive(day_local)
 
         # The rolling window can straddle a month boundary (e.g. last week of
         # June reaches into July).  Read EVERY month the window spans -- not just
