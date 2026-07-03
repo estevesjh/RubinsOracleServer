@@ -104,7 +104,19 @@ class DataFileHandler:
         return pd.date_range(start_utc, end_utc, freq=self.freq, tz="UTC")
 
     def update_monthly_archive(self, dt: datetime):
-        df_monthly = self.read_monthly_df(dt)
+        # On the first day of a new month the monthly archive does not exist yet.
+        # read_monthly_df raises FileNotFoundError in that case, which used to
+        # crash the whole pipeline at every month rollover (July 1 -> 3-day
+        # outage).  update_monthly_archive is precisely the routine that CREATES
+        # the archive from the daily cache, so a missing month is normal: start
+        # from an empty frame and let the daily cache populate it.
+        try:
+            df_monthly = self.read_monthly_df(dt)
+        except FileNotFoundError:
+            print(f"[INFO] No monthly archive for "
+                  f"{ensure_utc_timezone(dt).astimezone(pytz.timezone('America/Santiago')).strftime('%Y-%m')} "
+                  "yet; creating it from the daily cache.")
+            df_monthly = pd.DataFrame()
         df_daily = self.read_cache_df(dt)
 
         if df_daily.empty:
