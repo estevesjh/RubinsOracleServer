@@ -12,7 +12,7 @@ tz_chile = pytz.timezone("America/Santiago")
 
 # set the date to 2024-12-01
 # tz_chile = pytz.timezone("America/Santiago")
-now_local = tz_chile.localize(datetime(2026, 6, 1, 0, 0, 0))
+now_local = tz_chile.localize(datetime(2026, 7, 1, 0, 0, 0))
 # now_local = tz_chile.localize(datetime(2024, 7, 1, 0, 0, 0))
 
 handler = DataFileHandler()
