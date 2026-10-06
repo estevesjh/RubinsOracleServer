@@ -1,3 +1,15 @@
+import os
+
+# This node's InfiniBand ulimit (max locked memory, 8MB) is too low for UCX's
+# ibverbs memory registration, which PyTorch/Lightning's distributed init
+# probes for even on a single-process CPU run. Without this, ibv_reg_mr fails
+# and UCX retries in a tight loop forever -- pegs a CPU core and floods stdout
+# (once filled a 4.7GB log before anyone noticed). Force TCP transport so it
+# never touches ibverbs. Must be set before torch/lightning import.
+os.environ.setdefault("UCX_TLS", "tcp,self")
+os.environ.setdefault("NCCL_IB_DISABLE", "1")
+os.environ.setdefault("PL_TORCH_DISTRIBUTED_BACKEND", "gloo")
+
 import argparse
 from datetime import datetime
 import pandas as pd

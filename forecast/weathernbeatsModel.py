@@ -20,10 +20,7 @@ if _WNB.is_dir():
 from lsst.ts.weathernbeats.feature_builder import FeatureBuilder  # noqa: E402
 from lsst.ts.weathernbeats.model import WeatherForecastModel  # noqa: E402
 
-DEFAULT_BUNDLE = (
-    "/sdf/home/e/esteves/sitcom-analysis/ts_weathernbeats/"
-    "models/nbeatsx_ridge_v0.1.0"
-)
+DEFAULT_BUNDLE = "/sdf/data/rubin/user/esteves/models/nbeatsx_ridge_v0.2.0"
 
 # Gaussian smoothing of the forecast curve (paper §2: centered Gaussian on the
 # regular 15-min grid).  sigma = 1 h = 4 grid steps at 15-min cadence.
