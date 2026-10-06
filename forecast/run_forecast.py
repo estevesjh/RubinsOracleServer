@@ -90,6 +90,18 @@ def main():
         print("❌ No forecast was produced.")
         exit(1)
 
+    # Display window: keep only the last 3 days of history + the current day's
+    # forecast tail (3 + 1), matching the NBEATSx dashboard series. The rolling
+    # window itself stays wider (7 d) for the model's own history needs.
+    display_days = 4
+    now_naive = now.tz_localize(None) if now.tzinfo is not None else now
+    cutoff = (now_naive - pd.Timedelta(days=display_days - 1)).normalize()
+    ds_naive = pd.to_datetime(merged["ds"])
+    if getattr(ds_naive.dt, "tz", None) is not None:
+        ds_naive = ds_naive.dt.tz_localize(None)
+    merged = merged[ds_naive >= cutoff].reset_index(drop=True)
+    print(f"[INFO] Trimmed to last {display_days} days (>= {cutoff}): {len(merged)} rows.")
+
     validator.to_csv(merged, out_path)
     print(f"✅ Forecast CSV written to: {out_path}")
 
