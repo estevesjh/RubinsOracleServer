@@ -381,11 +381,26 @@ class ProphetTwilightValidator:
         df["sunset"] = df["sunset"].astype(bool).map({True: "true", False: "false"})
         df["sunrise"] = df["sunrise"].astype(bool).map({True: "true", False: "false"})
 
-        # 3. round temps to 2 decimals (match tooltip format) ---------------
+        # 3. cap the displayed confidence band at 3 degC (max-min), centered
+        #    on the point forecast -- Prophet's raw interval can balloon to
+        #    6-7 degC and dwarfs the actual temperature swing on the chart.
+        MAX_CI_WIDTH = 3.0
+        for center_col, lo_col, hi_col in [
+            ("forecast", "forecast_min", "forecast_max"),
+            ("forecast_3h", "forecast_3h_min", "forecast_3h_max"),
+        ]:
+            if lo_col in df.columns and hi_col in df.columns:
+                half = (df[hi_col] - df[lo_col]) / 2.0
+                half = half.clip(upper=MAX_CI_WIDTH / 2.0)
+                center = df[center_col] if center_col in df.columns else (df[hi_col] + df[lo_col]) / 2.0
+                df[lo_col] = center - half
+                df[hi_col] = center + half
+
+        # 4. round temps to 2 decimals (match tooltip format) ---------------
         for col in ["temp_actual", "temp_min", "temp_max", "forecast", "forecast_min", "forecast_max"]:
             df[col] = df[col].astype(float).round(2)
 
-        # 4. write ----------------------------------------------------------
+        # 5. write ----------------------------------------------------------
         df.to_csv(out_path, index=False)
         print(f"✅ wrote {len(df):,} rows → {out_path}")
 
