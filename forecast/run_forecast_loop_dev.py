@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Dev forecast loop: runs both Prophet and NBEATSx, uploads to dev worker.
+"""Forecast loop: runs both Prophet and NBEATSx, uploads to FORECAST_ENV's
+worker. Self-contained per env -- run one instance per env you want updated
+(prod and dev each need their own, nothing is shared between them).
 
 Usage (on SLAC):
     FORECAST_ENV=dev python run_forecast_loop_dev.py
+    FORECAST_ENV=prod python run_forecast_loop_dev.py
 
     # Or with a custom model directory:
     FORECAST_ENV=dev python run_forecast_loop_dev.py \
@@ -49,32 +52,36 @@ def run_cmd(cmd):
 def run_once(model_dir):
     now = datetime.now(TZ_CHILE).strftime("%Y-%m-%d %H:%M:%S CLT")
     env = os.environ.get("FORECAST_ENV", "dev")
-    log_banner(f"Dev pipeline at {now} (env={env})")
+    log_banner(f"Pipeline at {now} (env={env})")
 
     forecast_dir = Path(__file__).resolve().parent
+    py = sys.executable
 
     # Step 1: Update data from EFD
-    ok = run_cmd(f"python {forecast_dir / 'update_hourly_forecast.py'}")
+    ok = run_cmd(f"{py} {forecast_dir / 'update_hourly_forecast.py'}")
     if not ok:
         print("[WARN] EFD update failed, continuing with existing data...\n")
 
-    # Step 2: NBEATSx (ts_weathernbeats) forecast + upload.
-    # The dev loop only owns the nbeats source; the prophet source is uploaded
-    # by the production loop (run_forecast_loop.py), so re-running/uploading
-    # prophet here is redundant -- it doubles the KV writes and a prophet hang
-    # used to block the nbeats step.  NBEATSx runs first and is the only upload.
+    # Step 2: Prophet forecast + upload, for this process's own FORECAST_ENV.
+    # Each env (prod/dev) needs its own prophet run -- a loop pinned to one
+    # env never updates the other's KV, so this can't be skipped just because
+    # some other loop instance happens to cover prod.
+    log_banner("Prophet")
+    run_cmd(f"{py} {forecast_dir / 'run_forecast.py'}")
+    run_cmd(f"{py} {forecast_dir / 'send_data_to_api.py'} --source prophet")
+
+    # Step 3: NBEATSx (ts_weathernbeats) forecast + upload, same env.
     log_banner("NBEATSx")
     ok = run_cmd(
-        f"python {forecast_dir / 'run_weathernbeats_forecast.py'} --bundle {model_dir}"
+        f"{py} {forecast_dir / 'run_weathernbeats_forecast.py'} --bundle {model_dir}"
     )
     if ok:
-        # Find the output file
         from helper import DataFileHandler
         handler = DataFileHandler()
         nbeats_csv = handler.base_dir / "temp_forecast_nbeats.csv"
         if nbeats_csv.exists():
             run_cmd(
-                f"python {forecast_dir / 'send_data_to_api.py'}"
+                f"{py} {forecast_dir / 'send_data_to_api.py'}"
                 f" --source nbeats --csv {nbeats_csv}"
             )
         else:
