@@ -381,7 +381,20 @@ class ProphetTwilightValidator:
         df["sunset"] = df["sunset"].astype(bool).map({True: "true", False: "false"})
         df["sunrise"] = df["sunrise"].astype(bool).map({True: "true", False: "false"})
 
-        # 3. cap the displayed confidence band at 3 degC (max-min), centered
+        # 3. clip the forecast itself to a physically plausible range.
+        #    The short-horizon reactive Prophet model (ProphetExpBoostModel)
+        #    fits on a recency-weighted bootstrap (tau_hours=6), so a single
+        #    sharp real swing can dominate its trend fit; Prophet's linear
+        #    growth then extrapolates that slope with no floor/ceiling, which
+        #    can run away to e.g. -17 degC by the following midnight. Clip
+        #    before the CI-width step so the band re-centers on the clipped
+        #    value instead of still spanning the runaway number.
+        FORECAST_TEMP_BOUNDS = (-15.0, 35.0)
+        for center_col in ["forecast", "forecast_3h"]:
+            if center_col in df.columns:
+                df[center_col] = df[center_col].clip(*FORECAST_TEMP_BOUNDS)
+
+        # 4. cap the displayed confidence band at 3 degC (max-min), centered
         #    on the point forecast -- Prophet's raw interval can balloon to
         #    6-7 degC and dwarfs the actual temperature swing on the chart.
         MAX_CI_WIDTH = 3.0
@@ -396,11 +409,11 @@ class ProphetTwilightValidator:
                 df[lo_col] = center - half
                 df[hi_col] = center + half
 
-        # 4. round temps to 2 decimals (match tooltip format) ---------------
+        # 5. round temps to 2 decimals (match tooltip format) ---------------
         for col in ["temp_actual", "temp_min", "temp_max", "forecast", "forecast_min", "forecast_max"]:
             df[col] = df[col].astype(float).round(2)
 
-        # 5. write ----------------------------------------------------------
+        # 6. write ----------------------------------------------------------
         df.to_csv(out_path, index=False)
         print(f"✅ wrote {len(df):,} rows → {out_path}")
 
