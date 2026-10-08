@@ -381,18 +381,47 @@ class ProphetTwilightValidator:
         df["sunset"] = df["sunset"].astype(bool).map({True: "true", False: "false"})
         df["sunrise"] = df["sunrise"].astype(bool).map({True: "true", False: "false"})
 
-        # 3. clip the forecast itself to a physically plausible range.
+        # 3. clip the forecast itself to a sane range.
         #    The short-horizon reactive Prophet model (ProphetExpBoostModel)
         #    fits on a recency-weighted bootstrap (tau_hours=6), so a single
         #    sharp real swing can dominate its trend fit; Prophet's linear
         #    growth then extrapolates that slope with no floor/ceiling, which
-        #    can run away to e.g. -17 degC by the following midnight. Clip
-        #    before the CI-width step so the band re-centers on the clipped
-        #    value instead of still spanning the runaway number.
+        #    can run away to e.g. -17 degC by the following midnight.
+        #    Preferred bound: NBEATSx's forecast for the same timestamp (a
+        #    bounded neural model, not prone to this runaway) -- clip prophet
+        #    to within MAX_PROPHET_NBEATS_DIFF of it. Where no NBEATSx value
+        #    exists for that timestamp (stale/missing CSV, source=="nbeats"
+        #    itself, or a horizon NBEATSx doesn't cover), fall back to a fixed
+        #    physically plausible range. Clip before the CI-width step so the
+        #    band re-centers on the clipped value.
+        MAX_PROPHET_NBEATS_DIFF = 3.0
         FORECAST_TEMP_BOUNDS = (-15.0, 35.0)
+
+        nb_forecast = {}
+        if source == "prophet":
+            try:
+                from helper import DataFileHandler
+                nbeats_path = DataFileHandler().base_dir / "temp_forecast_nbeats.csv"
+                if nbeats_path.exists():
+                    nb_df = pd.read_csv(nbeats_path)
+                    nb_forecast = {
+                        col: dict(zip(nb_df["timestamp"], nb_df[col]))
+                        for col in ("forecast", "forecast_3h") if col in nb_df.columns
+                    }
+            except Exception as e:
+                print(f"[WARN] Could not load NBEATSx forecast for clipping: {e}")
+
         for center_col in ["forecast", "forecast_3h"]:
-            if center_col in df.columns:
-                df[center_col] = df[center_col].clip(*FORECAST_TEMP_BOUNDS)
+            if center_col not in df.columns:
+                continue
+            nb_map = nb_forecast.get(center_col, {})
+            nb_vals = df["timestamp"].map(nb_map).astype(float)
+            has_nb = nb_vals.notna()
+            df.loc[has_nb, center_col] = df.loc[has_nb, center_col].clip(
+                lower=nb_vals[has_nb] - MAX_PROPHET_NBEATS_DIFF,
+                upper=nb_vals[has_nb] + MAX_PROPHET_NBEATS_DIFF,
+            )
+            df.loc[~has_nb, center_col] = df.loc[~has_nb, center_col].clip(*FORECAST_TEMP_BOUNDS)
 
         # 4. cap the displayed confidence band at 3 degC (max-min), centered
         #    on the point forecast -- Prophet's raw interval can balloon to
