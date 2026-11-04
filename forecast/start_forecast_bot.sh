@@ -4,6 +4,7 @@
 #
 #   forecast/start_forecast_bot.sh          # start (or no-op if running)
 #   forecast/start_forecast_bot.sh --restart
+#   tmux kill-session -t tempBot             # stop (Ctrl-C is ignored on purpose)
 #
 # Logs: $BOT_DIR/../loop_prod.log, $BOT_DIR/../health.log
 set -euo pipefail
@@ -35,8 +36,11 @@ start() {
     local tmux_cmd=(new-window -t "$SESSION" -n "$window")
     tmux has-session -t "$SESSION" 2>/dev/null || tmux_cmd=(new-session -d -s "$SESSION" -n "$window")
     # Outer while-loop: if python dies (crash, OOM, bug), restart after 60 s
-    # instead of leaving the window dead.
-    tmux "${tmux_cmd[@]}" bash -c "
+    # instead of leaving the window dead. Ignore SIGINT (inherited by python):
+    # a stray Ctrl-C / SIGINT from the launching shell's cleanup killed the
+    # first run. setsid detaches tmux from the caller's session entirely.
+    setsid tmux "${tmux_cmd[@]}" bash -c "
+        trap '' INT
         source '$FORECAST_DIR/bot_env.sh'
         cd '$FORECAST_DIR'
         while true; do
