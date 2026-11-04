@@ -11,6 +11,9 @@ fetch is broken, which looks healthy by upload time alone.
 Usage:
     python check_forecast_health.py                 # one check, exit 1 if stale
     python check_forecast_health.py --watch         # loop, email on down/recovery
+    python check_forecast_health.py --preview-report   # print report, don't send
+    python check_forecast_health.py --send-report      # email report now to everyone
+    python check_forecast_health.py --send-report --to me@example.org   # test send
 """
 import argparse
 import io
@@ -84,8 +87,8 @@ def check(max_age_hours):
     return problems
 
 
-def send_mail(subject, body):
-    to = recipients()
+def send_mail(subject, body, to=None):
+    to = to or recipients()
     if not to:
         print(f"[MAIL] no recipients in {RECIPIENTS_FILE}; not sending '{subject}'")
         return False
@@ -195,15 +198,21 @@ def main():
     p.add_argument("--interval-min", type=float, default=15.0)
     p.add_argument("--preview-report", action="store_true",
                    help="print the forecast report email without sending it")
+    p.add_argument("--send-report", action="store_true",
+                   help="send the forecast report email now (doesn't touch the 5 h schedule)")
+    p.add_argument("--to", nargs="+", metavar="ADDR",
+                   help="with --send-report: send only to these, not the recipients file")
     p.add_argument("--repeat-hours", type=float, default=12.0,
                    help="re-send the down alert this often while still down")
     args = p.parse_args()
 
-    if args.preview_report:
+    if args.preview_report or args.send_report:
         now_clt = datetime.now(CLT)
         dfs = {s: load_source(s) for s in SOURCES}
         subject, body = build_report(dfs, now_clt, tonight_twilight(dfs, now_clt))
         print(f"Subject: {subject}\n\n{body}")
+        if args.send_report:
+            sys.exit(0 if send_mail(subject, body, to=args.to) else 1)
         return
 
     if not args.watch:
