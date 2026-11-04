@@ -45,9 +45,10 @@ start() {
         cd '$FORECAST_DIR'
         while true; do
             $(declare -f rotate); rotate '$log'
-            echo \"=== [\$(date)] starting: $cmd ===\" >> '$log'
-            $cmd >> '$log' 2>&1
-            echo \"=== [\$(date)] exited \$?, restarting in 60 s ===\" >> '$log'
+            # tee: show output in the tmux pane *and* append to the log.
+            echo \"=== [\$(date)] starting: $cmd ===\" | tee -a '$log'
+            $cmd 2>&1 | tee -a '$log'
+            echo \"=== [\$(date)] exited \${PIPESTATUS[0]}, restarting in 60 s ===\" | tee -a '$log'
             sleep 60
         done"
     echo "started $SESSION:$window -> $log"
