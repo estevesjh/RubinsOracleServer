@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Check the live dashboard is fresh; email an alert when it has been stale
-for more than --max-age-hours (default 3).
+for more than --max-age-hours (default 3). In --watch mode also email a
+forecast report (current temp + tonight's twilight forecast) every 5 h and
+once 3 h before evening twilight (Chile local time).
 
 "Fresh" means the newest row with a real temp_actual is recent -- not just the
 upload time. The bot can keep uploading a stale CSV every 15 min while the EFD
@@ -13,17 +15,36 @@ Usage:
 import argparse
 import io
 import json
+import os
 import subprocess
 import sys
 import time
+import traceback
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 BASE_URL = "https://rubin-weather-forecast.jesteves.workers.dev"
 SOURCES = ("prophet", "nbeats")
-ALERT_TO = "jesteves@fas.harvard.edu"
+CLT = ZoneInfo("America/Santiago")
+REPORT_EVERY_HOURS = 5.0
+REPORT_BEFORE_TWILIGHT_HOURS = 3.0
+BOT_DIR = Path(os.environ.get("BOT_DIR", "/sdf/data/rubin/user/esteves/forecast/bot"))
+STATE_FILE = BOT_DIR / "report_state.json"
+# Recipients live on the data volume, not in the repo (keeps addresses out of
+# git). One per line, '#' comments allowed; re-read on every send.
+RECIPIENTS_FILE = BOT_DIR / "alert_recipients.txt"
+
+
+def recipients():
+    try:
+        lines = RECIPIENTS_FILE.read_text().splitlines()
+    except OSError:
+        return []
+    return [a for a in (ln.split("#")[0].strip() for ln in lines) if a]
 
 
 def fetch(url, timeout=30):
@@ -64,12 +85,107 @@ def check(max_age_hours):
 
 
 def send_mail(subject, body):
+    to = recipients()
+    if not to:
+        print(f"[MAIL] no recipients in {RECIPIENTS_FILE}; not sending '{subject}'")
+        return False
     try:
-        subprocess.run(["mail", "-s", subject, ALERT_TO], input=body.encode(),
+        subprocess.run(["mail", "-s", subject, *to], input=body.encode(),
                        check=True, timeout=60)
         print(f"[MAIL] sent: {subject}")
+        return True
     except Exception as e:
         print(f"[MAIL] failed to send '{subject}': {e}")
+        return False
+
+
+def load_source(source):
+    df = pd.read_csv(io.StringIO(fetch(f"{BASE_URL}/api/forecast?source={source}")))
+    df["ts"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(CLT)
+    return df
+
+
+def tonight_twilight(dfs, now_clt):
+    """Today's evening-twilight time (CLT), from the dashboard's sunset flag."""
+    for df in dfs.values():
+        is_tw = df["sunset"].astype(str).str.lower().eq("true")
+        tw = df.loc[is_tw & (df["ts"].dt.date == now_clt.date()), "ts"]
+        if len(tw):
+            return tw.iloc[0]
+    return None
+
+
+def build_report(dfs, now_clt, twilight):
+    """Return (subject, body) for the forecast report email."""
+    actual = pd.concat([df.loc[df["temp_actual"].notna(), ["ts", "temp_actual"]]
+                        for df in dfs.values()])
+    lines = [f"Dashboard: {BASE_URL}", ""]
+    if len(actual):
+        cur = actual.sort_values("ts").iloc[-1]
+        lines.append(f"Current temp: {cur.temp_actual:.1f} C (measured {cur.ts:%H:%M} CLT)")
+        cur_s = f"{cur.temp_actual:.1f} C"
+    else:
+        lines.append("Current temp: no measurements on the dashboard!")
+        cur_s = "n/a"
+
+    tw_parts = []
+    if twilight is None:
+        lines.append("Evening twilight: not found in dashboard data")
+    else:
+        past = now_clt >= twilight
+        lines += ["", f"Evening twilight {twilight:%Y-%m-%d %H:%M} CLT"
+                  + (" (already passed)" if past else "") + ":"]
+        for name, src in (("NBEATSx", "nbeats"), ("Prophet", "prophet")):
+            row = dfs[src].loc[dfs[src]["ts"] == twilight]
+            if not len(row) or pd.isna(row["forecast"].iloc[0]):
+                lines.append(f"  {name:8s} no forecast")
+                continue
+            r = row.iloc[0]
+            line = (f"  {name:8s} forecast {r.forecast:.1f} C "
+                    f"(range {r.forecast_min:.1f} .. {r.forecast_max:.1f})")
+            if past and pd.notna(r.temp_actual):
+                line += f", actual {r.temp_actual:.1f} C"
+            lines.append(line)
+            tw_parts.append(f"{name} {r.forecast:.1f} C")
+
+    subject = f"[Rubin forecast] now {cur_s}"
+    if twilight is not None and tw_parts:
+        subject += f"; twilight {twilight:%H:%M} CLT: " + ", ".join(tw_parts)
+    lines += ["", f"Sent {now_clt:%Y-%m-%d %H:%M} CLT by the tempBot watchdog on SDF."]
+    return subject, "\n".join(lines) + "\n"
+
+
+def load_state():
+    try:
+        return json.loads(STATE_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def report_tick():
+    """Send the forecast report if it's due (every 5 h, or 3 h before twilight)."""
+    state = load_state()
+    now_clt = datetime.now(CLT)
+    dfs = {s: load_source(s) for s in SOURCES}
+    twilight = tonight_twilight(dfs, now_clt)
+
+    due = []
+    if time.time() - state.get("last_report", 0) >= REPORT_EVERY_HOURS * 3600:
+        due.append("every 5 h")
+    if (twilight is not None
+            and twilight - timedelta(hours=REPORT_BEFORE_TWILIGHT_HOURS) <= now_clt < twilight
+            and state.get("twilight_sent") != str(twilight.date())):
+        due.append("3 h before twilight")
+    if not due:
+        return
+
+    subject, body = build_report(dfs, now_clt, twilight)
+    print(f"[REPORT] due ({', '.join(due)})")
+    if send_mail(subject, body):
+        state["last_report"] = time.time()
+        if "3 h before twilight" in due:
+            state["twilight_sent"] = str(twilight.date())
+        STATE_FILE.write_text(json.dumps(state))
 
 
 def main():
@@ -77,9 +193,18 @@ def main():
     p.add_argument("--max-age-hours", type=float, default=3.0)
     p.add_argument("--watch", action="store_true", help="loop forever, email on state change")
     p.add_argument("--interval-min", type=float, default=15.0)
+    p.add_argument("--preview-report", action="store_true",
+                   help="print the forecast report email without sending it")
     p.add_argument("--repeat-hours", type=float, default=12.0,
                    help="re-send the down alert this often while still down")
     args = p.parse_args()
+
+    if args.preview_report:
+        now_clt = datetime.now(CLT)
+        dfs = {s: load_source(s) for s in SOURCES}
+        subject, body = build_report(dfs, now_clt, tonight_twilight(dfs, now_clt))
+        print(f"Subject: {subject}\n\n{body}")
+        return
 
     if not args.watch:
         problems = check(args.max_age_hours)
@@ -108,6 +233,10 @@ def main():
             send_mail("[Rubin forecast] dashboard recovered",
                       f"Fresh data again after {(now - down_since) / 3600:.1f} h.\n{BASE_URL}\n")
             down_since = last_alert = None
+        try:
+            report_tick()
+        except Exception:
+            traceback.print_exc()
         time.sleep(args.interval_min * 60)
 
 
