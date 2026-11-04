@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Check the live dashboard is fresh; email an alert when it has been stale
 for more than --max-age-hours (default 3). In --watch mode also email a
-forecast report (current temp + tonight's twilight forecast) twice a day:
-5 h and 3 h before evening twilight (Chile local time).
+forecast report (current temp + tonight's twilight forecast) 5 h and 3 h
+before evening nautical twilight (Chile local time, recomputed daily), and a
+final report 1 h after twilight with the measured temp and forecast error.
 
 "Fresh" means the newest row with a real temp_actual is recent -- not just the
 upload time. The bot can keep uploading a stale CSV every 15 min while the EFD
@@ -38,6 +39,7 @@ CLT = ZoneInfo("America/Santiago")
 # only sent within an hour of its mark, so a late restart skips it rather
 # than firing several at once.
 REPORT_HOURS_BEFORE_TWILIGHT = (5, 3)
+FINAL_REPORT_HOURS_AFTER = 1  # then a final actual-vs-forecast report
 BOT_DIR = Path(os.environ.get("BOT_DIR", "/sdf/data/rubin/user/esteves/forecast/bot"))
 STATE_FILE = BOT_DIR / "report_state.json"
 # Weekly node status email: Monday 09:00 CLT, to ADMIN_FILE only.
@@ -114,14 +116,33 @@ def load_source(source):
     return df
 
 
-def tonight_twilight(dfs, now_clt):
-    """Today's evening-twilight time (CLT), from the dashboard's sunset flag."""
-    for df in dfs.values():
-        is_tw = df["sunset"].astype(str).str.lower().eq("true")
-        tw = df.loc[is_tw & (df["ts"].dt.date == now_clt.date()), "ts"]
-        if len(tw):
-            return tw.iloc[0]
-    return None
+def tonight_twilight(now_clt):
+    """Today's evening nautical twilight (CLT), computed for the Rubin site --
+    changes every day. Same TwilightTimes the pipeline uses for its flags."""
+    from helper import TwilightTimes  # astroplan; only needed for reports
+    tw = TwilightTimes.from_day(now_clt.date().isoformat())
+    return pd.Timestamp(tw.evening_twilight_utc).tz_convert(CLT)
+
+
+def row_at(df, t, tol=pd.Timedelta(minutes=8)):
+    """Dashboard row nearest to t (15-min grid), or None if none within tol."""
+    if not len(df):
+        return None
+    i = (df["ts"] - t).abs().idxmin()
+    return df.loc[i] if abs(df.loc[i, "ts"] - t) <= tol else None
+
+
+def twilight_forecasts(dfs, twilight):
+    """{source: (forecast, min, max)} at the twilight time."""
+    out = {}
+    for src in SOURCES:
+        r = row_at(dfs[src], twilight)
+        if r is not None and pd.notna(r["forecast"]):
+            out[src] = (float(r["forecast"]), float(r["forecast_min"]), float(r["forecast_max"]))
+    return out
+
+
+NAMES = {"nbeats": "NBEATSx", "prophet": "Prophet"}
 
 
 def build_report(dfs, now_clt, twilight):
@@ -138,27 +159,18 @@ def build_report(dfs, now_clt, twilight):
         cur_s = "n/a"
 
     tw_parts = []
-    if twilight is None:
-        lines.append("Evening twilight: not found in dashboard data")
-    else:
-        past = now_clt >= twilight
-        lines += ["", f"Evening twilight {twilight:%Y-%m-%d %H:%M} CLT"
-                  + (" (already passed)" if past else "") + ":"]
-        for name, src in (("NBEATSx", "nbeats"), ("Prophet", "prophet")):
-            row = dfs[src].loc[dfs[src]["ts"] == twilight]
-            if not len(row) or pd.isna(row["forecast"].iloc[0]):
-                lines.append(f"  {name:8s} no forecast")
-                continue
-            r = row.iloc[0]
-            line = (f"  {name:8s} forecast {r.forecast:.1f} C "
-                    f"(range {r.forecast_min:.1f} .. {r.forecast_max:.1f})")
-            if past and pd.notna(r.temp_actual):
-                line += f", actual {r.temp_actual:.1f} C"
-            lines.append(line)
-            tw_parts.append(f"{name} {r.forecast:.1f} C")
+    lines += ["", f"Evening twilight {twilight:%Y-%m-%d %H:%M} CLT (nautical):"]
+    fcs = twilight_forecasts(dfs, twilight)
+    for src in ("nbeats", "prophet"):
+        if src not in fcs:
+            lines.append(f"  {NAMES[src]:8s} no forecast")
+            continue
+        fc, lo, hi = fcs[src]
+        lines.append(f"  {NAMES[src]:8s} forecast {fc:.1f} C (range {lo:.1f} .. {hi:.1f})")
+        tw_parts.append(f"{NAMES[src]} {fc:.1f} C")
 
     subject = f"[Rubin forecast] now {cur_s}"
-    if twilight is not None and tw_parts:
+    if tw_parts:
         subject += f"; twilight {twilight:%H:%M} CLT: " + ", ".join(tw_parts)
     lines += ["", f"Sent {now_clt:%Y-%m-%d %H:%M} CLT by the tempBot watchdog on SDF."]
     return subject, "\n".join(lines) + "\n"
@@ -171,26 +183,82 @@ def load_state():
         return {}
 
 
+def build_final_report(dfs, now_clt, twilight, issued):
+    """Post-twilight report: measured twilight temp vs the forecast we sent
+    before twilight (not the dashboard's current value, which by now is an
+    in-sample fit). Returns None if no measurement at twilight yet."""
+    actual = None
+    for src in SOURCES:
+        r = row_at(dfs[src], twilight)
+        if r is not None and pd.notna(r["temp_actual"]):
+            actual = float(r["temp_actual"])
+            break
+    if actual is None:
+        return None
+    lines = [f"Dashboard: {BASE_URL}", "",
+             f"Evening twilight {twilight:%Y-%m-%d %H:%M} CLT (nautical) -- final",
+             f"  Actual   {actual:.1f} C", ""]
+    parts = []
+    if issued:
+        lines.append(f"Forecast sent {issued['h']} h before twilight -> error (forecast - actual):")
+    for src in ("nbeats", "prophet"):
+        fc = issued.get(src) if issued else None
+        if fc is None:
+            lines.append(f"  {NAMES[src]:8s} no pre-twilight forecast recorded")
+            continue
+        err = fc[0] - actual
+        inside = "inside" if fc[1] <= actual <= fc[2] else "OUTSIDE"
+        lines.append(f"  {NAMES[src]:8s} forecast {fc[0]:.1f} C (range {fc[1]:.1f} .. {fc[2]:.1f}),"
+                     f" error {err:+.1f} C, actual {inside} range")
+        parts.append(f"{NAMES[src]} err {err:+.1f}")
+    subject = f"[Rubin forecast] twilight {twilight:%H:%M} final: actual {actual:.1f} C"
+    if parts:
+        subject += "; " + ", ".join(parts)
+    lines += ["", f"Sent {now_clt:%Y-%m-%d %H:%M} CLT by the tempBot watchdog on SDF."]
+    return subject, "\n".join(lines) + "\n"
+
+
 def report_tick():
-    """Send the forecast report at 5 h and 3 h before tonight's twilight."""
+    """Forecast reports 5 h and 3 h before tonight's twilight, then a final
+    report (actual vs forecast) 1 h after it."""
     now_clt = datetime.now(CLT)
-    dfs = {s: load_source(s) for s in SOURCES}
-    twilight = tonight_twilight(dfs, now_clt)
-    if twilight is None:
-        return
+    twilight = tonight_twilight(now_clt)
     state = load_state()
     sent = state.setdefault("reports_sent", [])
+    issued_all = state.setdefault("issued", {})
+    day = str(twilight.date())
+
+    def mark_sent(key):
+        sent.append(key)
+        state["reports_sent"] = sent[-30:]
+        state["issued"] = dict(sorted(issued_all.items())[-7:])
+        STATE_FILE.write_text(json.dumps(state))
+
     for h in REPORT_HOURS_BEFORE_TWILIGHT:
-        key = f"{twilight.date()}-{h}h"
+        key = f"{day}-{h}h"
         mark = twilight - timedelta(hours=h)
         if key in sent or not (mark <= now_clt < mark + timedelta(hours=1)):
             continue
+        dfs = {s: load_source(s) for s in SOURCES}
         subject, body = build_report(dfs, now_clt, twilight)
-        print(f"[REPORT] {h} h before twilight")
+        print(f"[REPORT] {h} h before twilight ({twilight:%H:%M})")
         if send_mail(subject, body):
-            sent.append(key)
-            state["reports_sent"] = sent[-20:]
-            STATE_FILE.write_text(json.dumps(state))
+            # Remember what we forecast; the final report scores this one.
+            issued_all[day] = {"h": h, **twilight_forecasts(dfs, twilight)}
+            mark_sent(key)
+
+    # Final: from 1 h after twilight, once the measurement has landed;
+    # give up waiting 3 h after.
+    key = f"{day}-final"
+    start = twilight + timedelta(hours=FINAL_REPORT_HOURS_AFTER)
+    if key not in sent and start <= now_clt < twilight + timedelta(hours=3):
+        dfs = {s: load_source(s) for s in SOURCES}
+        report = build_final_report(dfs, now_clt, twilight, issued_all.get(day))
+        if report is None:
+            print("[REPORT] final: no twilight measurement yet, will retry")
+        elif send_mail(*report):
+            print("[REPORT] final sent")
+            mark_sent(key)
 
 
 def sh(cmd):
@@ -265,7 +333,7 @@ def main():
     if args.preview_report or args.send_report:
         now_clt = datetime.now(CLT)
         dfs = {s: load_source(s) for s in SOURCES}
-        subject, body = build_report(dfs, now_clt, tonight_twilight(dfs, now_clt))
+        subject, body = build_report(dfs, now_clt, tonight_twilight(now_clt))
         print(f"Subject: {subject}\n\n{body}")
         if args.send_report:
             sys.exit(0 if send_mail(subject, body, to=args.to) else 1)
