@@ -8,7 +8,7 @@ name: forecast-health
 
 on:
   schedule:
-    - cron: "17 * * * *"   # hourly
+    - cron: "17 13 * * 1"   # weekly, Monday 13:17 UTC (~10:17 CLT)
   workflow_dispatch:
 
 jobs:
