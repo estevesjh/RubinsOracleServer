@@ -19,10 +19,15 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import shutil
+import traceback
+
 import pytz
 
 TZ_CHILE = pytz.timezone("America/Santiago")
 PIPELINE_FREQ_MIN = 15
+STEP_TIMEOUT_S = 20 * 60  # a hung EFD query/fit must not stall the loop forever
+MIN_FREE_GB = 1.0
 
 # Ensure FORECAST_ENV defaults to dev
 if "FORECAST_ENV" not in os.environ:
@@ -42,7 +47,12 @@ def log_step(msg):
 def run_cmd(cmd):
     """Run a command and return True on success."""
     log_step(f"Running: {cmd}")
-    ret = subprocess.call(cmd, shell=True)
+    sys.stdout.flush()
+    try:
+        ret = subprocess.call(cmd, shell=True, timeout=STEP_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        print(f"\n[ERROR] Command timed out after {STEP_TIMEOUT_S} s: {cmd}\n")
+        return False
     if ret != 0:
         print(f"\n[ERROR] Command failed: {cmd} (exit {ret})\n")
         return False
@@ -57,6 +67,11 @@ def run_once(model_dir):
     forecast_dir = Path(__file__).resolve().parent
     py = sys.executable
 
+    for d in {Path.home(), Path(os.environ.get("TMPDIR", "/tmp"))}:
+        free_gb = shutil.disk_usage(d).free / 1e9
+        if free_gb < MIN_FREE_GB:
+            print(f"[ERROR] Only {free_gb:.2f} GB free on {d} -- steps may fail")
+
     # Step 1: Update data from EFD
     ok = run_cmd(f"{py} {forecast_dir / 'update_hourly_forecast.py'}")
     if not ok:
@@ -67,8 +82,12 @@ def run_once(model_dir):
     # env never updates the other's KV, so this can't be skipped just because
     # some other loop instance happens to cover prod.
     log_banner("Prophet")
-    run_cmd(f"{py} {forecast_dir / 'run_forecast.py'}")
-    run_cmd(f"{py} {forecast_dir / 'send_data_to_api.py'} --source prophet")
+    # Only upload if the forecast step succeeded -- otherwise we'd re-upload
+    # the previous (stale) CSV and the dashboard would look alive when it isn't.
+    if run_cmd(f"{py} {forecast_dir / 'run_forecast.py'}"):
+        run_cmd(f"{py} {forecast_dir / 'send_data_to_api.py'} --source prophet")
+    else:
+        print("[WARN] Prophet forecast failed; skipping upload.")
 
     # Step 3: NBEATSx (ts_weathernbeats) forecast + upload, same env.
     log_banner("NBEATSx")
@@ -127,7 +146,12 @@ def main():
         run_once(args.model_dir)
     else:
         while True:
-            run_once(args.model_dir)
+            try:
+                run_once(args.model_dir)
+            except Exception:
+                # Never let one bad cycle kill the loop.
+                traceback.print_exc()
+            sys.stdout.flush()
             sleep_until_next_period(PIPELINE_FREQ_MIN)
 
 
