@@ -1,0 +1,25 @@
+# Off-SDF check that the live dashboard has fresh data. Catches what the
+# on-node watchdog can't: the SDF node rebooting (cron/scrontab are disabled
+# there, so tempBot and its watchdog both die silently).
+#
+# A failed run = dashboard stale > 3 h; GitHub emails the workflow's owner.
+# Scheduled workflows only run from the default branch (main).
+name: forecast-health
+
+on:
+  schedule:
+    - cron: "17 * * * *"   # hourly
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet pandas
+      - name: Dashboard fresh within 3 h
+        run: python forecast/check_forecast_health.py --max-age-hours 3

@@ -14,6 +14,7 @@ Usage:
     python check_forecast_health.py --preview-report   # print report, don't send
     python check_forecast_health.py --send-report      # email report now to everyone
     python check_forecast_health.py --send-report --to me@example.org   # test send
+    python check_forecast_health.py --send-status      # node status now (admin list)
 """
 import argparse
 import io
@@ -37,14 +38,17 @@ REPORT_EVERY_HOURS = 5.0
 REPORT_BEFORE_TWILIGHT_HOURS = 3.0
 BOT_DIR = Path(os.environ.get("BOT_DIR", "/sdf/data/rubin/user/esteves/forecast/bot"))
 STATE_FILE = BOT_DIR / "report_state.json"
+# Weekly node status email: Monday 09:00 CLT, to ADMIN_FILE only.
+STATUS_WEEKDAY, STATUS_HOUR = 0, 9
+ADMIN_FILE = BOT_DIR / "admin_recipients.txt"
 # Recipients live on the data volume, not in the repo (keeps addresses out of
 # git). One per line, '#' comments allowed; re-read on every send.
 RECIPIENTS_FILE = BOT_DIR / "alert_recipients.txt"
 
 
-def recipients():
+def recipients(path=RECIPIENTS_FILE):
     try:
-        lines = RECIPIENTS_FILE.read_text().splitlines()
+        lines = path.read_text().splitlines()
     except OSError:
         return []
     return [a for a in (ln.split("#")[0].strip() for ln in lines) if a]
@@ -191,6 +195,51 @@ def report_tick():
         STATE_FILE.write_text(json.dumps(state))
 
 
+def sh(cmd):
+    try:
+        return subprocess.run(cmd, shell=True, capture_output=True, text=True,
+                              timeout=30).stdout.strip()
+    except Exception as e:
+        return f"({e})"
+
+
+def node_status(problems):
+    """Plain-text node/bot status for the weekly email."""
+    import shutil
+    host = os.uname().nodename
+    lines = [
+        f"Node: {host}",
+        f"Up since: {sh('uptime -s')}  ({sh('uptime -p')})",
+        "",
+        "tempBot tmux windows:",
+        sh("tmux list-windows -t tempBot -F '  #{window_name}: pid #{pane_pid}' 2>&1"),
+        "",
+        "Disk free:",
+    ]
+    for d in (Path.home(), BOT_DIR):
+        u = shutil.disk_usage(d)
+        lines.append(f"  {d}: {u.free / 1e9:.1f} GB free of {u.total / 1e9:.0f} GB")
+    lines += ["", "Dashboard: " + ("STALE -- " + "; ".join(problems) if problems else "fresh"),
+              BASE_URL]
+    return "\n".join(lines) + "\n"
+
+
+def status_tick(problems):
+    """Weekly node status email (Monday 09:00 CLT). If it stops arriving,
+    the node or the watchdog is down."""
+    now_clt = datetime.now(CLT)
+    week = now_clt.strftime("%G-W%V")
+    state = load_state()
+    if (now_clt.weekday() != STATUS_WEEKDAY or now_clt.hour < STATUS_HOUR
+            or state.get("status_week") == week):
+        return
+    subject = f"[Rubin forecast] weekly node status {week}: " + ("STALE" if problems else "OK")
+    if send_mail(subject, node_status(problems), to=recipients(ADMIN_FILE)):
+        state = load_state()
+        state["status_week"] = week
+        STATE_FILE.write_text(json.dumps(state))
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--max-age-hours", type=float, default=3.0)
@@ -200,11 +249,20 @@ def main():
                    help="print the forecast report email without sending it")
     p.add_argument("--send-report", action="store_true",
                    help="send the forecast report email now (doesn't touch the 5 h schedule)")
+    p.add_argument("--send-status", action="store_true",
+                   help="email the weekly node status now (to --to, else admin_recipients.txt)")
     p.add_argument("--to", nargs="+", metavar="ADDR",
                    help="with --send-report: send only to these, not the recipients file")
     p.add_argument("--repeat-hours", type=float, default=12.0,
                    help="re-send the down alert this often while still down")
     args = p.parse_args()
+
+    if args.send_status:
+        body = node_status(check(args.max_age_hours))
+        print(body)
+        ok = send_mail("[Rubin forecast] node status (manual)", body,
+                       to=args.to or recipients(ADMIN_FILE))
+        sys.exit(0 if ok else 1)
 
     if args.preview_report or args.send_report:
         now_clt = datetime.now(CLT)
@@ -242,10 +300,11 @@ def main():
             send_mail("[Rubin forecast] dashboard recovered",
                       f"Fresh data again after {(now - down_since) / 3600:.1f} h.\n{BASE_URL}\n")
             down_since = last_alert = None
-        try:
-            report_tick()
-        except Exception:
-            traceback.print_exc()
+        for tick in (report_tick, lambda: status_tick(problems)):
+            try:
+                tick()
+            except Exception:
+                traceback.print_exc()
         time.sleep(args.interval_min * 60)
 
 
