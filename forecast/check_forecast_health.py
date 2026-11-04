@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Check the live dashboard is fresh; email an alert when it has been stale
 for more than --max-age-hours (default 3). In --watch mode also email a
-forecast report (current temp + tonight's twilight forecast) every 5 h and
-once 3 h before evening twilight (Chile local time).
+forecast report (current temp + tonight's twilight forecast) twice a day:
+5 h and 3 h before evening twilight (Chile local time).
 
 "Fresh" means the newest row with a real temp_actual is recent -- not just the
 upload time. The bot can keep uploading a stale CSV every 15 min while the EFD
@@ -34,8 +34,10 @@ import pandas as pd
 BASE_URL = "https://rubin-weather-forecast.jesteves.workers.dev"
 SOURCES = ("prophet", "nbeats")
 CLT = ZoneInfo("America/Santiago")
-REPORT_EVERY_HOURS = 5.0
-REPORT_BEFORE_TWILIGHT_HOURS = 3.0
+# Forecast report goes out this many hours before evening twilight. Each is
+# only sent within an hour of its mark, so a late restart skips it rather
+# than firing several at once.
+REPORT_HOURS_BEFORE_TWILIGHT = (5, 3)
 BOT_DIR = Path(os.environ.get("BOT_DIR", "/sdf/data/rubin/user/esteves/forecast/bot"))
 STATE_FILE = BOT_DIR / "report_state.json"
 # Weekly node status email: Monday 09:00 CLT, to ADMIN_FILE only.
@@ -170,29 +172,25 @@ def load_state():
 
 
 def report_tick():
-    """Send the forecast report if it's due (every 5 h, or 3 h before twilight)."""
-    state = load_state()
+    """Send the forecast report at 5 h and 3 h before tonight's twilight."""
     now_clt = datetime.now(CLT)
     dfs = {s: load_source(s) for s in SOURCES}
     twilight = tonight_twilight(dfs, now_clt)
-
-    due = []
-    if time.time() - state.get("last_report", 0) >= REPORT_EVERY_HOURS * 3600:
-        due.append("every 5 h")
-    if (twilight is not None
-            and twilight - timedelta(hours=REPORT_BEFORE_TWILIGHT_HOURS) <= now_clt < twilight
-            and state.get("twilight_sent") != str(twilight.date())):
-        due.append("3 h before twilight")
-    if not due:
+    if twilight is None:
         return
-
-    subject, body = build_report(dfs, now_clt, twilight)
-    print(f"[REPORT] due ({', '.join(due)})")
-    if send_mail(subject, body):
-        state["last_report"] = time.time()
-        if "3 h before twilight" in due:
-            state["twilight_sent"] = str(twilight.date())
-        STATE_FILE.write_text(json.dumps(state))
+    state = load_state()
+    sent = state.setdefault("reports_sent", [])
+    for h in REPORT_HOURS_BEFORE_TWILIGHT:
+        key = f"{twilight.date()}-{h}h"
+        mark = twilight - timedelta(hours=h)
+        if key in sent or not (mark <= now_clt < mark + timedelta(hours=1)):
+            continue
+        subject, body = build_report(dfs, now_clt, twilight)
+        print(f"[REPORT] {h} h before twilight")
+        if send_mail(subject, body):
+            sent.append(key)
+            state["reports_sent"] = sent[-20:]
+            STATE_FILE.write_text(json.dumps(state))
 
 
 def sh(cmd):
@@ -248,7 +246,7 @@ def main():
     p.add_argument("--preview-report", action="store_true",
                    help="print the forecast report email without sending it")
     p.add_argument("--send-report", action="store_true",
-                   help="send the forecast report email now (doesn't touch the 5 h schedule)")
+                   help="send the forecast report email now (doesn't affect the schedule)")
     p.add_argument("--send-status", action="store_true",
                    help="email the weekly node status now (to --to, else admin_recipients.txt)")
     p.add_argument("--to", nargs="+", metavar="ADDR",
